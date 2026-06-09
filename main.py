@@ -799,6 +799,116 @@ async def save_invoice_endpoint(data: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+
+@app.post("/parse-credit-note")
+async def parse_credit_note_endpoint(file: UploadFile = File(...)):
+    """Recibe un ZIP o XML de nota crédito DIAN y devuelve los datos para pre-llenar el formulario."""
+    raw = await file.read()
+    filename = file.filename or ""
+
+    try:
+        if filename.lower().endswith(".zip"):
+            with zipfile.ZipFile(io.BytesIO(raw)) as z:
+                xml_names = [n for n in z.namelist() if n.lower().endswith(".xml") and not n.lower().startswith("__")]
+                if not xml_names:
+                    raise HTTPException(status_code=400, detail="El ZIP no contiene XML.")
+                raw_xml = z.read(xml_names[0])
+        elif filename.lower().endswith(".xml"):
+            raw_xml = raw
+        else:
+            raise HTTPException(status_code=400, detail="Solo se aceptan XML o ZIP.")
+
+        root_el = extract_invoice_xml(raw_xml)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Error al leer XML: {str(e)}")
+
+    try:
+        # Leer datos de la nota crédito
+        # El XML de NC usa CreditNote como raíz pero los campos son similares a Invoice
+        supplier = (
+            first_text(root_el, ["AccountingSupplierParty","Party","PartyLegalEntity","RegistrationName"]) or
+            first_text(root_el, ["AccountingSupplierParty","Party","PartyName","Name"]) or ""
+        )
+        nit = (
+            first_text(root_el, ["AccountingSupplierParty","Party","PartyTaxScheme","CompanyID"]) or
+            first_text(root_el, ["AccountingSupplierParty","Party","PartyLegalEntity","CompanyID"]) or ""
+        )
+        numero_nota = first_text(root_el, ["ID"]) or ""
+        fecha_nota  = first_text(root_el, ["IssueDate"]) or str(date.today())
+
+        # Factura original referenciada
+        factura_original = ""
+        for ref in all_descendants(root_el, "BillingReference"):
+            factura_original = first_text(ref, ["InvoiceDocumentReference","ID"]) or ""
+            if factura_original:
+                break
+        # También buscar en DiscrepancyResponse
+        if not factura_original:
+            for dr in all_descendants(root_el, "DiscrepancyResponse"):
+                factura_original = first_text(dr, ["ReferenceID"]) or ""
+                if factura_original:
+                    break
+
+        # Totales
+        subtotal = parse_decimal(first_text(root_el, ["LegalMonetaryTotal","LineExtensionAmount"]))
+        total    = parse_decimal(first_text(root_el, ["LegalMonetaryTotal","PayableAmount"]))
+        iva      = money(total - subtotal) if subtotal and total and total >= subtotal else 0.0
+
+        # Retefuente en NC
+        retefuente = 0.0
+        for ta in all_descendants(root_el, "TaxTotal"):
+            tax_id   = ""
+            tax_name = ""
+            for sc in all_descendants(ta, "TaxScheme"):
+                tax_id   = first_text(sc, ["ID"]) or ""
+                tax_name = (first_text(sc, ["Name"]) or "").upper()
+            if tax_id in ("06","05","07") or "RETE" in tax_name:
+                retefuente += parse_decimal(first_text(ta, ["TaxAmount"]))
+
+        # Motivo
+        motivo = ""
+        for dr in all_descendants(root_el, "DiscrepancyResponse"):
+            motivo = first_text(dr, ["Description"]) or ""
+            if motivo:
+                break
+        if not motivo:
+            for note in all_descendants(root_el, "Note"):
+                if note.text and note.text.strip():
+                    motivo = note.text.strip()
+                    break
+
+        # Buscar factura contable vinculada en Supabase
+        factura_contable_id = None
+        try:
+            sb = get_supabase()
+            if factura_original:
+                r = sb.table("facturas_contables").select("id,subtotal,iva,retefuente,valor_a_pagar,proveedor").eq("numero_factura", factura_original).limit(1).execute()
+                if r.data:
+                    factura_contable_id = r.data[0]["id"]
+        except Exception:
+            pass
+
+        return {
+            "proveedor":            supplier,
+            "proveedor_nit":        nit,
+            "numero_nota":          numero_nota,
+            "fecha_nota":           fecha_nota,
+            "factura_original":     factura_original,
+            "factura_contable_id":  factura_contable_id,
+            "subtotal":             money(subtotal),
+            "iva":                  money(iva),
+            "retefuente":           money(retefuente),
+            "total":                money(total),
+            "motivo":               motivo,
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Error al parsear nota crédito: {str(e)}")
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
