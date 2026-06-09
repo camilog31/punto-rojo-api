@@ -540,6 +540,21 @@ async def save_invoice_endpoint(data: dict):
             r2 = sb.table("proveedores").insert({"nombre": nombre, "nit": nit}).execute()
             proveedor_id = r2.data[0]["id"]
 
+        # 1b. Actualizar NIT en proveedores_contables si no lo tiene
+        # Esto permite que la próxima factura lo encuentre por NIT automáticamente
+        if nit:
+            try:
+                # Buscar por nombre similar
+                rc = sb.rpc("match_proveedor", {"nombre_buscar": nombre}).execute()
+                if rc.data:
+                    pc_id = rc.data[0].get("id")
+                    pc_nit = rc.data[0].get("nit")
+                    # Solo actualizar si no tiene NIT
+                    if pc_id and not pc_nit:
+                        sb.table("proveedores_contables").update({"nit": nit}).eq("id", pc_id).execute()
+            except Exception:
+                pass
+
         # 2. Insertar factura
         fac = sb.table("facturas").insert({
             "proveedor_id":    proveedor_id,
