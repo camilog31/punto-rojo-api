@@ -475,6 +475,9 @@ async def parse_invoice_endpoint(
                 line["venta_caja"]           = p.get("venta_caja") if p.get("venta_caja") is not None else line["venta_caja"]
                 line["costo_anterior"]       = float(p.get("costo_unidad_sin_iva") or 0)
 
+    except Exception as e:
+        invoice["supabase_match_error"] = str(e)
+
     return invoice
 
 
