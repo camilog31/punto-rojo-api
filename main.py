@@ -226,6 +226,18 @@ def parse_invoice(root: ET.Element) -> dict:
     if not iva:      iva = sum(x["iva_linea"] for x in lines)
     if not total:    total = subtotal + iva
 
+    # Leer retefuente del XML si viene explícita
+    # En DIAN: TaxTotal con TaxScheme ID=06 o Name contiene "RETE"
+    retefuente_xml = 0.0
+    for ta in all_descendants(root, "TaxTotal"):
+        tax_id   = ""
+        tax_name = ""
+        for sc in all_descendants(ta, "TaxScheme"):
+            tax_id   = first_text(sc, ["ID"]) or ""
+            tax_name = (first_text(sc, ["Name"]) or "").upper()
+        if tax_id in ("06", "05", "07") or "RETE" in tax_name or "RTEFUENTE" in tax_name:
+            retefuente_xml += parse_decimal(first_text(ta, ["TaxAmount"]))
+
     # Detectar INPUSU
     inpusu = 0.0
     for note_el in all_descendants(root, "Note"):
@@ -256,6 +268,7 @@ def parse_invoice(root: ET.Element) -> dict:
         "subtotal_factura": money(subtotal),
         "iva_factura": money(iva),
         "total_factura": money(total),
+        "retefuente_xml": money(retefuente_xml),
         "inpusu": money(inpusu),
         "iva_detectado": iva_detectado,
         "lineas": lines,
@@ -635,17 +648,25 @@ async def save_invoice_endpoint(data: dict):
         iva_val    = float(invoice.get("iva_factura") or 0)
         valor_desc = round(subtotal * desc_pct / 100, 2)
 
-        # Calcular retefuente desde parametros_retefuente
+        # Calcular retefuente:
+        # 1. Si el XML ya trae retefuente → usarla directamente
+        # 2. Si no → calcular con parametros_retefuente según el proveedor
         retefuente = 0.0
         aplica_rete = prov_info.get("aplica_retefuente", "NO")
-        if aplica_rete == "SI":
+        retefuente_xml = float(invoice.get("retefuente_xml") or 0)
+        
+        if retefuente_xml > 0:
+            # El XML ya trae la retefuente calculada
+            retefuente = retefuente_xml
+        elif aplica_rete == "SI":
+            # Calcular con parámetros
             try:
                 params = sb.table("parametros_retefuente").select(
                     "porcentaje,base_minima"
                 ).eq("aplica_a", "COMPRAS").eq("activo", True).limit(1).execute()
                 if params.data:
-                    pct_rete   = float(params.data[0].get("porcentaje") or 2.5)
-                    base_min   = float(params.data[0].get("base_minima") or 1148000)
+                    pct_rete = float(params.data[0].get("porcentaje") or 2.5)
+                    base_min = float(params.data[0].get("base_minima") or 1148000)
                     if subtotal >= base_min:
                         retefuente = round(subtotal * pct_rete / 100, 2)
             except Exception:
