@@ -547,6 +547,7 @@ async def save_invoice_endpoint(data: dict):
                     "venta_unidad":         bool(line.get("venta_unidad")),
                     "venta_paquete":        bool(line.get("venta_paquete")),
                     "venta_caja":           bool(line.get("venta_caja")),
+                    "nota_descuento":       line.get("nota_descuento") or "",
                 }).eq("id", prod_id).execute()
 
                 estado = "NUEVO" if costo_ant == 0 else ("SUBIO" if cu > costo_ant else "BAJO" if cu < costo_ant else "SIN_CAMBIO")
@@ -577,6 +578,7 @@ async def save_invoice_endpoint(data: dict):
                     "activo":               True,
                     "ultima_factura":       invoice.get("numero_factura"),
                     "ultima_fecha":         invoice.get("fecha"),
+                    "nota_descuento":       line.get("nota_descuento") or "",
                 }).execute()
                 prod_id = res.data[0]["id"]
 
