@@ -690,11 +690,12 @@ async def save_invoice_endpoint(data: dict):
             # El XML ya trae la retefuente calculada
             retefuente = retefuente_xml
         elif aplica_rete == "SI":
-            # Calcular con parámetros
+            # Calcular con parámetros vigentes según la fecha de la factura
             try:
+                fecha_factura = invoice.get("fecha") or str(date.today())
                 params = sb.table("parametros_retefuente").select(
                     "porcentaje,base_minima"
-                ).eq("aplica_a", "COMPRAS").eq("activo", True).limit(1).execute()
+                ).eq("aplica_a", "COMPRAS").eq("activo", True).lte("vigente_desde", fecha_factura).gte("vigente_hasta", fecha_factura).limit(1).execute()
                 if params.data:
                     pct_rete = float(params.data[0].get("porcentaje") or 2.5)
                     base_min = float(params.data[0].get("base_minima") or 1148000)
