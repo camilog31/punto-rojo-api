@@ -383,15 +383,31 @@ def check_duplicate(supabase: Client, cufe: str, numero_factura: str) -> bool:
 def get_proveedor_info(supabase: Client, nit: str, nombre: str) -> dict:
     """Busca el proveedor en proveedores_contables para obtener configuración."""
     try:
-        r = supabase.table("proveedores_contables").select(
-            "proveedor_nombre,forma_pago,descuento_pct,aplica_retefuente,tipo,regimen,descuento_afecta_costo"
-        ).eq("nit", nit).limit(1).execute()
-        if r.data:
-            return r.data[0]
+        # Buscar por NIT primero (más exacto)
+        if nit:
+            r = supabase.table("proveedores_contables").select(
+                "id,proveedor_nombre,forma_pago,descuento_pct,aplica_retefuente,tipo,regimen,descuento_afecta_costo"
+            ).eq("nit", nit).limit(1).execute()
+            if r.data:
+                return r.data[0]
+        
         # Buscar por nombre similar usando la función SQL
         r2 = supabase.rpc("match_proveedor", {"nombre_buscar": nombre}).execute()
         if r2.data:
-            return r2.data[0]
+            row = r2.data[0]
+            # Normalizar campos — match_proveedor devuelve "nombre" en lugar de "proveedor_nombre"
+            return {
+                "id":                    row.get("id"),
+                "proveedor_nombre":      row.get("nombre") or row.get("proveedor_nombre"),
+                "nit":                   row.get("nit"),
+                "forma_pago":            row.get("forma_pago"),
+                "descuento_pct":         row.get("descuento_pct"),
+                "aplica_retefuente":     row.get("aplica_retefuente"),
+                "tipo":                  row.get("tipo"),
+                "regimen":               row.get("regimen"),
+                "descuento_afecta_costo": row.get("descuento_afecta_costo", False),
+                "similitud":             row.get("similitud"),
+            }
     except Exception:
         pass
     return {}
