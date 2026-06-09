@@ -634,7 +634,24 @@ async def save_invoice_endpoint(data: dict):
         subtotal   = float(invoice.get("subtotal_factura") or 0)
         iva_val    = float(invoice.get("iva_factura") or 0)
         valor_desc = round(subtotal * desc_pct / 100, 2)
-        valor_pagar = subtotal + iva_val - valor_desc
+
+        # Calcular retefuente desde parametros_retefuente
+        retefuente = 0.0
+        aplica_rete = prov_info.get("aplica_retefuente", "NO")
+        if aplica_rete == "SI":
+            try:
+                params = sb.table("parametros_retefuente").select(
+                    "porcentaje,base_minima"
+                ).eq("aplica_a", "COMPRAS").eq("activo", True).limit(1).execute()
+                if params.data:
+                    pct_rete   = float(params.data[0].get("porcentaje") or 2.5)
+                    base_min   = float(params.data[0].get("base_minima") or 1148000)
+                    if subtotal >= base_min:
+                        retefuente = round(subtotal * pct_rete / 100, 2)
+            except Exception:
+                retefuente = 0.0
+
+        valor_pagar = subtotal + iva_val - valor_desc - retefuente
 
         sb.table("facturas_contables").insert({
             "factura_id":      factura_id,
@@ -646,8 +663,8 @@ async def save_invoice_endpoint(data: dict):
             "subtotal":        subtotal,
             "descuento_pct":   desc_pct,
             "valor_descuento": valor_desc,
-            "aplica_retefuente": prov_info.get("aplica_retefuente", "NO"),
-            "retefuente":      0,
+            "aplica_retefuente": aplica_rete,
+            "retefuente":      retefuente,
             "iva":             iva_val,
             "valor_a_pagar":   valor_pagar,
             "precios_revisados": "NO",
