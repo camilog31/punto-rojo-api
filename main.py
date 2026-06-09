@@ -76,41 +76,44 @@ def extract_invoice_xml(raw_xml: bytes) -> ET.Element:
 def detect_packaging(desc: str):
     """Detecta la estructura de empaque de la descripción del producto.
     Retorna (unidades_por_paquete, unidades_por_caja, paquetes_por_caja)
+
+    Reglas:
+    - Si hay "X N (CJxM)" → up=N, pc=M, uc=N*M
+    - Si solo hay "(CJxN)" → caja directa up=1, pc=N, uc=N
+    - Si hay "PCN" o "PQN" → paquete de N unidades
+    - Si hay "CN" al final → caja de N paquetes (COPA FAYCO C10)
     """
     if not desc:
         return 1, 1, 1
     d = desc.upper()
 
-    # Patrón: CJX50, CJ50, CJ X 50 — caja directa
     m = re.search(r'CJ\s*X?\s*(\d+)', d)
     if m:
-        unidades_caja = int(m.group(1))
-        # Buscar paquete dentro: PC50, PQ25, X 25
+        cj_num = int(m.group(1))
         pm = re.search(r'(?:PC|PQ|PK)\s*X?\s*(\d+)', d)
         if pm:
             up = int(pm.group(1))
-            pc = max(1, unidades_caja // up)
-            return up, unidades_caja, pc
-        # Buscar X N al inicio para paquete
-        pm2 = re.search(r'X\s*(\d+)\s+(?:DECO|TRANSP|CRISTAL|SOLIDO|WAU)', d)
-        if pm2:
-            up = int(pm2.group(1))
-            pc = max(1, unidades_caja // up)
-            return up, unidades_caja, pc
-        return 1, unidades_caja, unidades_caja
+            pc = max(1, cj_num // up)
+            return up, cj_num, pc
+        pos_cj = m.start()
+        texto_antes = d[:pos_cj]
+        matches_x = re.findall(r'(?<!\d)X\s*(\d+)', texto_antes)
+        if matches_x:
+            up = int(matches_x[-1])
+            pc = cj_num
+            uc = up * pc
+            return up, uc, pc
+        return 1, cj_num, cj_num
 
-    # Patrón: PC50, PQ50 — paquete
     m = re.search(r'(?:PC|PQ|PK)\s*X?\s*(\d+)', d)
     if m:
         up = int(m.group(1))
         return up, up, 1
 
-    # Patrón: C10 al final — caja de N paquetes (ej: COPA FAYCO C10)
     m = re.search(r'\bC(\d+)\b', d)
     if m:
         packs = int(m.group(1))
-        # Buscar X N para unidades por paquete
-        pm = re.search(r'X\s*(\d+)', d)
+        pm = re.search(r'(?<!\d)X\s*(\d+)', d)
         up = int(pm.group(1)) if pm else 1
         return up, up * packs, packs
 
