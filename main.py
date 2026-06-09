@@ -306,7 +306,14 @@ def add_calcs(lines: list, iva_mode: str) -> list:
         transporte  = float(l.get("transporte_adicional", 0) or 0)
         costo_fact_final = costo_base + transporte
 
-        cu, cp, cc = calc_costs(costo_fact_final, pres, up, pc)
+        # El precio_unitario_factura es el precio de 1 unidad de compra (PA = paquete/paca).
+        # Si up == pc (ej: X 50 CJX50): la unidad de compra es el PAQUETE → usar "Paquete"
+        # Si up != pc (ej: X 50 CJ20): la unidad de compra es la CAJA → usar "Caja/Paca"
+        pres_calculo = pres
+        if pres == "Caja/Paca" and up == pc:
+            pres_calculo = "Paquete"
+
+        cu, cp, cc = calc_costs(costo_fact_final, pres_calculo, up, pc)
 
         row = {**l,
             "unidades_por_caja": uc,
