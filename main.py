@@ -323,11 +323,16 @@ def add_calcs(lines: list, iva_mode: str) -> list:
 # ─── Búsqueda de productos similares en Supabase ─────────────────────────────
 
 def find_similar_product(supabase: Client, proveedor_nit: str, sku: str, nombre: str):
-    """Busca si el producto ya existe en la BD para mostrar match."""
+    """Busca si el producto ya existe en la BD para mostrar match.
+    Si existe, devuelve todos los campos para pre-llenar el formulario.
+    """
     try:
         # Buscar por SKU proveedor exacto
         r = supabase.table("productos").select(
-            "id,sku_interno,nombre_punto_rojo,costo_unidad_sin_iva,markup_unidad_pct,markup_paquete_pct,markup_caja_pct"
+            "id,sku_interno,sku_proveedor,nombre_punto_rojo,categoria,"
+            "presentacion_facturada,unidades_por_paquete,paquetes_por_caja,unidades_por_caja,"
+            "costo_unidad_sin_iva,markup_unidad_pct,markup_paquete_pct,markup_caja_pct,"
+            "venta_unidad,venta_paquete,venta_caja,costo_transporte"
         ).eq("sku_proveedor", sku).eq("activo", True).limit(1).execute()
         if r.data:
             return {"match": "Exacto", "producto": r.data[0]}
@@ -413,11 +418,30 @@ async def parse_invoice_endpoint(
         # Info del proveedor contable
         invoice["proveedor_info"] = get_proveedor_info(sb, invoice["proveedor_nit"] or "", invoice["proveedor"])
 
-        # Match de productos
+        # Match de productos — si existe, pre-llenar con datos guardados
         for line in invoice["lineas"]:
             match_info = find_similar_product(sb, invoice["proveedor_nit"] or "", line["sku_proveedor"], line["nombre_factura"])
-            line["match_tipo"]    = match_info["match"]
-            line["producto_bd"]   = match_info["producto"]
+            line["match_tipo"]  = match_info["match"]
+            line["producto_bd"] = match_info["producto"]
+
+            if match_info["match"] == "Exacto" and match_info["producto"]:
+                p = match_info["producto"]
+                # Pre-llenar con datos guardados (nombre, márgenes, presentación, cómo se vende)
+                # El costo se recalcula siempre desde la factura nueva
+                line["producto_id"]          = p.get("id")
+                line["nombre_punto_rojo"]    = p.get("nombre_punto_rojo") or line["nombre_factura"]
+                line["categoria"]            = p.get("categoria") or ""
+                line["presentacion_facturada"] = p.get("presentacion_facturada") or line["presentacion_facturada"]
+                line["unidades_por_paquete"] = p.get("unidades_por_paquete") or line["unidades_por_paquete"]
+                line["paquetes_por_caja"]    = p.get("paquetes_por_caja") or line["paquetes_por_caja"]
+                line["unidades_por_caja"]    = p.get("unidades_por_caja") or line["unidades_por_caja"]
+                line["markup_unidad_pct"]    = p.get("markup_unidad_pct") or line["markup_unidad_pct"]
+                line["markup_paquete_pct"]   = p.get("markup_paquete_pct") or line["markup_paquete_pct"]
+                line["markup_caja_pct"]      = p.get("markup_caja_pct") or line["markup_caja_pct"]
+                line["venta_unidad"]         = p.get("venta_unidad") if p.get("venta_unidad") is not None else line["venta_unidad"]
+                line["venta_paquete"]        = p.get("venta_paquete") if p.get("venta_paquete") is not None else line["venta_paquete"]
+                line["venta_caja"]           = p.get("venta_caja") if p.get("venta_caja") is not None else line["venta_caja"]
+                line["costo_anterior"]       = float(p.get("costo_unidad_sin_iva") or 0)
 
     except Exception as e:
         invoice["supabase_error"] = str(e)
