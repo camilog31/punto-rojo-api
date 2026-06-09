@@ -214,9 +214,9 @@ def parse_invoice(root: ET.Element) -> dict:
             "venta_unidad": vu,
             "venta_paquete": vp,
             "venta_caja": vc,
-            "markup_unidad_pct": 45.0,
+            "markup_unidad_pct": 40.0,
             "markup_paquete_pct": 35.0,
-            "markup_caja_pct": 25.0,
+            "markup_caja_pct": 30.0,
             "descuento_factura_pct": desc_pct,
             "descuento_factura_amt": desc_amt,
             "nota_descuento": f"Descuento en factura {desc_pct:.0f}% (${desc_amt:,.0f})" if desc_amt > 0 else "",
@@ -297,9 +297,9 @@ def add_calcs(lines: list, iva_mode: str) -> list:
         pc   = max(int(l.get("paquetes_por_caja") or 1), 1)
         uc   = max(up * pc, 1)
         pres = l.get("presentacion_facturada", "Unidad")
-        mu   = float(l.get("markup_unidad_pct") or 45)
+        mu   = float(l.get("markup_unidad_pct") or 40)
         mp   = float(l.get("markup_paquete_pct") or 35)
-        mc   = float(l.get("markup_caja_pct") or 25)
+        mc   = float(l.get("markup_caja_pct") or 30)
 
         precio_fact = l.get("precio_unitario_factura") or (l.get("subtotal_linea", 0) / max(l.get("cantidad_facturada", 1), 1))
         costo_base  = cost_without_tax(precio_fact, iva_mode, l.get("iva_porcentaje", IVA_DEFAULT))
@@ -507,9 +507,9 @@ async def save_invoice_endpoint(data: dict):
                     "unidades_por_caja":    uc,
                     "ultima_factura":       invoice.get("numero_factura"),
                     "ultima_fecha":         invoice.get("fecha"),
-                    "markup_unidad_pct":    float(line.get("markup_unidad_pct") or 45),
+                    "markup_unidad_pct":    float(line.get("markup_unidad_pct") or 40),
                     "markup_paquete_pct":   float(line.get("markup_paquete_pct") or 35),
-                    "markup_caja_pct":      float(line.get("markup_caja_pct") or 25),
+                    "markup_caja_pct":      float(line.get("markup_caja_pct") or 30),
                     "venta_unidad":         bool(line.get("venta_unidad")),
                     "venta_paquete":        bool(line.get("venta_paquete")),
                     "venta_caja":           bool(line.get("venta_caja")),
@@ -532,9 +532,9 @@ async def save_invoice_endpoint(data: dict):
                     "paquetes_por_caja":    pc,
                     "unidades_por_caja":    uc,
                     "costo_unidad_sin_iva": cu,
-                    "markup_unidad_pct":    float(line.get("markup_unidad_pct") or 45),
+                    "markup_unidad_pct":    float(line.get("markup_unidad_pct") or 40),
                     "markup_paquete_pct":   float(line.get("markup_paquete_pct") or 35),
-                    "markup_caja_pct":      float(line.get("markup_caja_pct") or 25),
+                    "markup_caja_pct":      float(line.get("markup_caja_pct") or 30),
                     "venta_unidad":         bool(line.get("venta_unidad")),
                     "venta_paquete":        bool(line.get("venta_paquete")),
                     "venta_caja":           bool(line.get("venta_caja")),
