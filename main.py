@@ -510,6 +510,70 @@ async def parse_invoice_endpoint(
     return invoice
 
 
+def recalcular_retefuente_grupo(supabase: Client, proveedor: str, fecha_factura: str, aplica_rete: str) -> None:
+    """Recalcula la retefuente para todas las facturas del mismo proveedor en la misma fecha.
+    Si la suma de subtotales supera la base mínima, aplica retefuente a todas.
+    Si no supera, quita la retefuente a todas.
+    """
+    if aplica_rete != "SI":
+        return
+    try:
+        # Obtener parámetro vigente
+        params = supabase.table("parametros_retefuente").select(
+            "porcentaje,base_minima"
+        ).eq("aplica_a", "COMPRAS").eq("activo", True).lte("vigente_desde", fecha_factura).gte("vigente_hasta", fecha_factura).limit(1).execute()
+        
+        if not params.data:
+            return
+        
+        pct_rete = float(params.data[0].get("porcentaje") or 2.5)
+        base_min = float(params.data[0].get("base_minima") or 1148000)
+        
+        # Obtener todas las facturas del mismo proveedor en la misma fecha
+        facturas = supabase.table("facturas_contables").select(
+            "id,subtotal,retefuente"
+        ).eq("proveedor", proveedor).eq("fecha_factura", fecha_factura).execute()
+        
+        if not facturas.data:
+            return
+        
+        # Calcular suma total de subtotales
+        total_subtotal = sum(float(f.get("subtotal") or 0) for f in facturas.data)
+        
+        # Determinar si aplica retefuente al grupo
+        if total_subtotal >= base_min:
+            # Distribuir retefuente proporcionalmente entre las facturas
+            for f in facturas.data:
+                subtotal_f = float(f.get("subtotal") or 0)
+                rete_f = round(subtotal_f * pct_rete / 100, 2)
+                valor_pagar_query = supabase.table("facturas_contables").select(
+                    "subtotal,iva,valor_descuento"
+                ).eq("id", f["id"]).single().execute()
+                if valor_pagar_query.data:
+                    vd = valor_pagar_query.data
+                    nuevo_valor = float(vd.get("subtotal") or 0) + float(vd.get("iva") or 0) - float(vd.get("valor_descuento") or 0) - rete_f
+                    supabase.table("facturas_contables").update({
+                        "retefuente": rete_f,
+                        "valor_a_pagar": nuevo_valor
+                    }).eq("id", f["id"]).execute()
+        else:
+            # No aplica retefuente — quitar a todas
+            for f in facturas.data:
+                if float(f.get("retefuente") or 0) > 0:
+                    valor_pagar_query = supabase.table("facturas_contables").select(
+                        "subtotal,iva,valor_descuento"
+                    ).eq("id", f["id"]).single().execute()
+                    if valor_pagar_query.data:
+                        vd = valor_pagar_query.data
+                        nuevo_valor = float(vd.get("subtotal") or 0) + float(vd.get("iva") or 0) - float(vd.get("valor_descuento") or 0)
+                        supabase.table("facturas_contables").update({
+                            "retefuente": 0,
+                            "valor_a_pagar": nuevo_valor
+                        }).eq("id", f["id"]).execute()
+    except Exception:
+        pass
+
+
 def generate_sku(supabase: Client, categoria: str) -> str:
     """Genera un SKU automático basado en la categoría.
     Formato: CATEGORIA-XXXX (ej: VASO-0001, COPA-0023)
@@ -723,6 +787,11 @@ async def save_invoice_endpoint(data: dict):
             "precios_revisados": "NO",
             "cufe":            invoice.get("cufe", ""),
         }).execute()
+
+        # Recalcular retefuente para el grupo proveedor/fecha
+        # Esto maneja el caso de múltiples facturas del mismo proveedor el mismo día
+        if not retefuente_xml:
+            recalcular_retefuente_grupo(sb, nombre, invoice.get("fecha", ""), aplica_rete)
 
         return {"ok": True, "factura_id": factura_id, "mensaje": f"Factura {invoice.get('numero_factura')} guardada correctamente."}
 
