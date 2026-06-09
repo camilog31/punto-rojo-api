@@ -312,6 +312,13 @@ def add_calcs(lines: list, iva_mode: str) -> list:
         mc   = float(l.get("markup_caja_pct") or 30)
 
         precio_fact = l.get("precio_unitario_factura") or (l.get("subtotal_linea", 0) / max(l.get("cantidad_facturada", 1), 1))
+        
+        # Si el proveedor tiene descuento_afecta_costo=True y hay descuento en la línea,
+        # aplicar el descuento al precio antes de calcular el costo
+        desc_pct = float(l.get("descuento_factura_pct") or 0)
+        if l.get("descuento_afecta_costo") and desc_pct > 0:
+            precio_fact = money(precio_fact * (1 - desc_pct / 100))
+
         costo_base  = cost_without_tax(precio_fact, iva_mode, l.get("iva_porcentaje", IVA_DEFAULT))
         transporte  = float(l.get("transporte_adicional", 0) or 0)
         costo_fact_final = costo_base + transporte
@@ -364,7 +371,7 @@ def get_proveedor_info(supabase: Client, nit: str, nombre: str) -> dict:
     """Busca el proveedor en proveedores_contables para obtener configuración."""
     try:
         r = supabase.table("proveedores_contables").select(
-            "proveedor_nombre,forma_pago,descuento_pct,aplica_retefuente,tipo,regimen"
+            "proveedor_nombre,forma_pago,descuento_pct,aplica_retefuente,tipo,regimen,descuento_afecta_costo"
         ).eq("nit", nit).limit(1).execute()
         if r.data:
             return r.data[0]
@@ -414,10 +421,6 @@ async def parse_invoice_endpoint(
     # Usar iva_mode detectado o el override
     iva_mode = iva_mode_override or invoice["iva_detectado"]
 
-    # Calcular costos y precios
-    invoice["lineas"] = add_calcs(invoice["lineas"], iva_mode)
-    invoice["iva_mode_usado"] = iva_mode
-
     # Conectar a Supabase para enriquecer datos
     try:
         sb = get_supabase()
@@ -425,8 +428,27 @@ async def parse_invoice_endpoint(
         # Verificar duplicado
         invoice["es_duplicado"] = check_duplicate(sb, invoice["cufe"], invoice["numero_factura"])
 
-        # Info del proveedor contable
-        invoice["proveedor_info"] = get_proveedor_info(sb, invoice["proveedor_nit"] or "", invoice["proveedor"])
+        # Info del proveedor contable — necesaria ANTES de calcular costos
+        prov_info = get_proveedor_info(sb, invoice["proveedor_nit"] or "", invoice["proveedor"])
+        invoice["proveedor_info"] = prov_info
+
+        # Marcar descuento_afecta_costo en cada línea según el proveedor
+        descuento_afecta = bool(prov_info.get("descuento_afecta_costo", False))
+        for line in invoice["lineas"]:
+            line["descuento_afecta_costo"] = descuento_afecta
+
+    except Exception as e:
+        invoice["supabase_error"] = str(e)
+        invoice["es_duplicado"] = False
+        invoice["proveedor_info"] = {}
+
+    # Calcular costos y precios (después de marcar descuento_afecta_costo)
+    invoice["lineas"] = add_calcs(invoice["lineas"], iva_mode)
+    invoice["iva_mode_usado"] = iva_mode
+
+    # Conectar a Supabase para match de productos
+    try:
+        sb = get_supabase()
 
         # Match de productos — si existe, pre-llenar con datos guardados
         for line in invoice["lineas"]:
@@ -452,11 +474,6 @@ async def parse_invoice_endpoint(
                 line["venta_paquete"]        = p.get("venta_paquete") if p.get("venta_paquete") is not None else line["venta_paquete"]
                 line["venta_caja"]           = p.get("venta_caja") if p.get("venta_caja") is not None else line["venta_caja"]
                 line["costo_anterior"]       = float(p.get("costo_unidad_sin_iva") or 0)
-
-    except Exception as e:
-        invoice["supabase_error"] = str(e)
-        invoice["es_duplicado"] = False
-        invoice["proveedor_info"] = {}
 
     return invoice
 
