@@ -481,6 +481,33 @@ async def parse_invoice_endpoint(
     return invoice
 
 
+def generate_sku(supabase: Client, categoria: str) -> str:
+    """Genera un SKU automático basado en la categoría.
+    Formato: CATEGORIA-XXXX (ej: VASO-0001, COPA-0023)
+    """
+    # Limpiar y normalizar la categoría
+    import unicodedata
+    prefix = categoria.strip().upper() if categoria else "PROD"
+    # Eliminar acentos y caracteres especiales
+    prefix = ''.join(
+        c for c in unicodedata.normalize('NFD', prefix)
+        if unicodedata.category(c) != 'Mn'
+    )
+    # Solo letras y números, máx 8 chars
+    prefix = ''.join(c for c in prefix if c.isalnum())[:8]
+    if not prefix:
+        prefix = "PROD"
+    
+    # Contar productos existentes con ese prefijo
+    try:
+        r = supabase.table("productos").select("sku_interno").like("sku_interno", f"{prefix}-%").execute()
+        count = len(r.data) if r.data else 0
+    except Exception:
+        count = 0
+    
+    return f"{prefix}-{str(count + 1).zfill(4)}"
+
+
 @app.post("/save-invoice")
 async def save_invoice_endpoint(data: dict):
     """Guarda la factura y sus productos en Supabase."""
@@ -555,6 +582,9 @@ async def save_invoice_endpoint(data: dict):
                 costo_ant = 0
                 variacion = 0
                 estado    = "NUEVO"
+                # Generar SKU automático si no tiene uno
+                categoria_line = line.get("categoria", "") or ""
+                sku_int = generate_sku(sb, categoria_line)
                 res = sb.table("productos").insert({
                     "proveedor_id":         proveedor_id,
                     "sku_proveedor":        line.get("sku_proveedor", ""),
