@@ -269,20 +269,30 @@ def cost_without_tax(precio: float, iva_mode: str, iva_pct: float = IVA_DEFAULT)
     return money(precio)
 
 def calc_costs(costo_fact: float, pres: str, up: int, pc: int):
+    """
+    costo_fact = precio de la unidad facturada.
+    En facturas DIAN el precio siempre corresponde al PAQUETE
+    (la unidad de compra es el paquete, qty = número de paquetes comprados).
+    
+    Siempre calculamos:
+      cp = costo_fact (costo del paquete)
+      cu = cp / up    (costo de la unidad individual)
+      cc = cp * pc    (costo de la caja completa)
+    
+    Para Unidad (up=1, pc=1): precio_fact es el costo unitario directamente.
+    """
     up = max(up, 1); pc = max(pc, 1)
-    uc = max(up * pc, 1)
-    if pres == "Caja/Paca":
+    
+    if pres == "Unidad" or (up == 1 and pc == 1):
+        cu = costo_fact
+        cp = costo_fact
         cc = costo_fact
-        cp = money(cc / pc) if pc > 1 else cc
-        cu = money(cc / uc) if uc > 1 else cc
-    elif pres == "Paquete":
+    else:
+        # precio_fact = costo del paquete
         cp = costo_fact
         cu = money(cp / up) if up > 1 else cp
         cc = money(cp * pc)
-    else:
-        cu = costo_fact
-        cp = money(cu * up)
-        cc = money(cu * uc)
+    
     return cu, cp, cc
 
 def sale_price(costo: float, markup: float, transporte: float = 0.0) -> float:
@@ -306,14 +316,7 @@ def add_calcs(lines: list, iva_mode: str) -> list:
         transporte  = float(l.get("transporte_adicional", 0) or 0)
         costo_fact_final = costo_base + transporte
 
-        # El precio_unitario_factura es el precio de 1 unidad de compra (PA = paquete/paca).
-        # Si up == pc (ej: X 50 CJX50): la unidad de compra es el PAQUETE → usar "Paquete"
-        # Si up != pc (ej: X 50 CJ20): la unidad de compra es la CAJA → usar "Caja/Paca"
-        pres_calculo = pres
-        if pres == "Caja/Paca" and up == pc:
-            pres_calculo = "Paquete"
-
-        cu, cp, cc = calc_costs(costo_fact_final, pres_calculo, up, pc)
+        cu, cp, cc = calc_costs(costo_fact_final, pres, up, pc)
 
         row = {**l,
             "unidades_por_caja": uc,
@@ -497,6 +500,8 @@ async def save_invoice_endpoint(data: dict):
             sku_int  = line.get("sku_interno") or line.get("sku_proveedor", "")
             prod_id  = line.get("producto_id")
             cu       = float(line.get("costo_unidad_sin_iva") or 0)
+            cp       = float(line.get("costo_paquete_sin_iva") or 0)
+            cc       = float(line.get("costo_caja_sin_iva") or 0)
             up       = int(line.get("unidades_por_paquete") or 1)
             pc       = int(line.get("paquetes_por_caja") or 1)
             uc       = int(line.get("unidades_por_caja") or (up * pc))
@@ -508,7 +513,9 @@ async def save_invoice_endpoint(data: dict):
                 variacion = round(((cu - costo_ant) / costo_ant * 100), 2) if costo_ant > 0 else 0
 
                 sb.table("productos").update({
-                    "costo_unidad_sin_iva": cu,
+                    "costo_unidad_sin_iva":  cu,
+                    "costo_paquete_sin_iva": cp,
+                    "costo_caja_sin_iva":    cc,
                     "unidades_por_paquete": up,
                     "paquetes_por_caja":    pc,
                     "unidades_por_caja":    uc,
@@ -538,7 +545,9 @@ async def save_invoice_endpoint(data: dict):
                     "unidades_por_paquete": up,
                     "paquetes_por_caja":    pc,
                     "unidades_por_caja":    uc,
-                    "costo_unidad_sin_iva": cu,
+                    "costo_unidad_sin_iva":  cu,
+                    "costo_paquete_sin_iva": cp,
+                    "costo_caja_sin_iva":    cc,
                     "markup_unidad_pct":    float(line.get("markup_unidad_pct") or 40),
                     "markup_paquete_pct":   float(line.get("markup_paquete_pct") or 35),
                     "markup_caja_pct":      float(line.get("markup_caja_pct") or 30),
