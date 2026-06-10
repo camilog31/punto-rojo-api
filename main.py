@@ -219,7 +219,7 @@ def parse_invoice(root: ET.Element) -> dict:
             "markup_caja_pct": 30.0,
             "descuento_factura_pct": desc_pct,
             "descuento_factura_amt": desc_amt,
-            "nota_descuento": f"Descuento en factura {desc_pct:.0f}% (${desc_amt:,.0f})" if desc_amt > 0 else "",
+            "nota_descuento": f"Descuento en factura {desc_pct:.0f}% (${(desc_amt / max(qty, 1)):,.0f} por unidad compra)" if desc_amt > 0 else "",
         })
 
     if not subtotal: subtotal = sum(x["subtotal_linea"] for x in lines)
