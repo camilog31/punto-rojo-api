@@ -486,8 +486,6 @@ async def parse_invoice_endpoint(
         invoice["es_duplicado"] = False
         invoice["proveedor_info"] = {}
 
-    # Calcular costos y precios (después de marcar descuento_afecta_costo)
-    invoice["lineas"] = add_calcs(invoice["lineas"], iva_mode)
     invoice["iva_mode_usado"] = iva_mode
 
     # Conectar a Supabase para match de productos
@@ -524,6 +522,9 @@ async def parse_invoice_endpoint(
 
     except Exception as e:
         invoice["supabase_match_error"] = str(e)
+
+    # Calcular costos y precios DESPUÉS del match para usar datos correctos de BD
+    invoice["lineas"] = add_calcs(invoice["lineas"], iva_mode)
 
     return invoice
 
