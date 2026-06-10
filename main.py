@@ -510,7 +510,10 @@ async def parse_invoice_endpoint(
                 line["presentacion_facturada"] = p.get("presentacion_facturada") or line["presentacion_facturada"]
                 line["unidades_por_paquete"] = p.get("unidades_por_paquete") or line["unidades_por_paquete"]
                 line["paquetes_por_caja"]    = p.get("paquetes_por_caja") or line["paquetes_por_caja"]
-                line["unidades_por_caja"]    = p.get("unidades_por_caja") or line["unidades_por_caja"]
+                # No sobreescribir unidades_por_caja desde BD — recalcular siempre
+                up_match = p.get("unidades_por_paquete") or line["unidades_por_paquete"]
+                pc_match = p.get("paquetes_por_caja") or line["paquetes_por_caja"]
+                line["unidades_por_caja"]    = up_match * pc_match
                 line["markup_unidad_pct"]    = p.get("markup_unidad_pct") or line["markup_unidad_pct"]
                 line["markup_paquete_pct"]   = p.get("markup_paquete_pct") or line["markup_paquete_pct"]
                 line["markup_caja_pct"]      = p.get("markup_caja_pct") or line["markup_caja_pct"]
