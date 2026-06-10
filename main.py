@@ -283,43 +283,38 @@ def cost_without_tax(precio: float, iva_mode: str, iva_pct: float = IVA_DEFAULT)
 
 def calc_costs(costo_fact: float, pres: str, up: int, pc: int, precio_es_por: str = ""):
     """
-    costo_fact = precio de la unidad facturada.
-    precio_es_por = override del usuario: "Caja", "Paquete", "Unidad" o "" (auto)
+    costo_fact = precio de la unidad facturada según la presentación.
     
-    Si precio_es_por está definido, úsalo para determinar la base del precio.
-    Si no, usar la lógica automática (precio = paquete por defecto).
+    Regla por presentación:
+    - Caja/Paca → precio es de la CAJA completa
+    - Paquete   → precio es del PAQUETE
+    - Unidad    → precio es unitario
+    
+    precio_es_por permite override manual si el usuario lo necesita.
     """
     up = max(up, 1); pc = max(pc, 1)
     uc = up * pc
 
-    # Override del usuario
-    if precio_es_por == "Caja":
+    # Override manual del usuario
+    base = precio_es_por if precio_es_por else (
+        "Caja"    if pres == "Caja/Paca" else
+        "Paquete" if pres == "Paquete"   else
+        "Unidad"
+    )
+
+    if base == "Caja":
         cc = costo_fact
         cp = money(cc / pc) if pc > 1 else cc
         cu = money(cp / up) if up > 1 else cp
-        return cu, cp, cc
-    elif precio_es_por == "Paquete":
+    elif base == "Paquete":
         cp = costo_fact
         cu = money(cp / up) if up > 1 else cp
         cc = money(cp * pc)
-        return cu, cp, cc
-    elif precio_es_por == "Unidad":
+    else:  # Unidad
         cu = costo_fact
         cp = money(cu * up)
         cc = money(cu * uc)
-        return cu, cp, cc
 
-    # Auto: sin override
-    if pres == "Unidad" or (up == 1 and pc == 1):
-        cu = costo_fact
-        cp = costo_fact
-        cc = costo_fact
-    else:
-        # precio_fact = costo del paquete (regla general DIAN)
-        cp = costo_fact
-        cu = money(cp / up) if up > 1 else cp
-        cc = money(cp * pc)
-    
     return cu, cp, cc
 
 def sale_price(costo: float, markup: float, transporte: float = 0.0) -> float:
@@ -351,6 +346,11 @@ def add_calcs(lines: list, iva_mode: str) -> list:
         costo_fact_final = costo_base + transporte
 
         precio_es_por = l.get("precio_es_por") or ""
+        # Auto-detectar si no hay override: qty=1 con pc>1 → precio es por caja
+        if not precio_es_por:
+            qty = float(l.get("cantidad_facturada") or 1)
+            if qty == 1 and pc > 1:
+                precio_es_por = "Caja"
         cu, cp, cc = calc_costs(costo_fact_final, pres, up, pc, precio_es_por)
 
         row = {**l,
