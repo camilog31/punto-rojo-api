@@ -281,27 +281,41 @@ def cost_without_tax(precio: float, iva_mode: str, iva_pct: float = IVA_DEFAULT)
         return money(precio / (1 + iva_pct / 100))
     return money(precio)
 
-def calc_costs(costo_fact: float, pres: str, up: int, pc: int):
+def calc_costs(costo_fact: float, pres: str, up: int, pc: int, precio_es_por: str = ""):
     """
     costo_fact = precio de la unidad facturada.
-    En facturas DIAN el precio siempre corresponde al PAQUETE
-    (la unidad de compra es el paquete, qty = número de paquetes comprados).
+    precio_es_por = override del usuario: "Caja", "Paquete", "Unidad" o "" (auto)
     
-    Siempre calculamos:
-      cp = costo_fact (costo del paquete)
-      cu = cp / up    (costo de la unidad individual)
-      cc = cp * pc    (costo de la caja completa)
-    
-    Para Unidad (up=1, pc=1): precio_fact es el costo unitario directamente.
+    Si precio_es_por está definido, úsalo para determinar la base del precio.
+    Si no, usar la lógica automática (precio = paquete por defecto).
     """
     up = max(up, 1); pc = max(pc, 1)
-    
+    uc = up * pc
+
+    # Override del usuario
+    if precio_es_por == "Caja":
+        cc = costo_fact
+        cp = money(cc / pc) if pc > 1 else cc
+        cu = money(cp / up) if up > 1 else cp
+        return cu, cp, cc
+    elif precio_es_por == "Paquete":
+        cp = costo_fact
+        cu = money(cp / up) if up > 1 else cp
+        cc = money(cp * pc)
+        return cu, cp, cc
+    elif precio_es_por == "Unidad":
+        cu = costo_fact
+        cp = money(cu * up)
+        cc = money(cu * uc)
+        return cu, cp, cc
+
+    # Auto: sin override
     if pres == "Unidad" or (up == 1 and pc == 1):
         cu = costo_fact
         cp = costo_fact
         cc = costo_fact
     else:
-        # precio_fact = costo del paquete
+        # precio_fact = costo del paquete (regla general DIAN)
         cp = costo_fact
         cu = money(cp / up) if up > 1 else cp
         cc = money(cp * pc)
@@ -336,7 +350,8 @@ def add_calcs(lines: list, iva_mode: str) -> list:
         transporte  = float(l.get("transporte_adicional", 0) or 0)
         costo_fact_final = costo_base + transporte
 
-        cu, cp, cc = calc_costs(costo_fact_final, pres, up, pc)
+        precio_es_por = l.get("precio_es_por") or ""
+        cu, cp, cc = calc_costs(costo_fact_final, pres, up, pc, precio_es_por)
 
         row = {**l,
             "unidades_por_caja": uc,
