@@ -673,12 +673,28 @@ async def save_invoice_endpoint(data: dict):
         for line in lineas:
             sku_int  = line.get("sku_interno") or line.get("sku_proveedor", "")
             prod_id  = line.get("producto_id")
-            cu       = float(line.get("costo_unidad_sin_iva") or 0)
-            cp       = float(line.get("costo_paquete_sin_iva") or 0)
-            cc       = float(line.get("costo_caja_sin_iva") or 0)
             up       = int(line.get("unidades_por_paquete") or 1)
             pc       = int(line.get("paquetes_por_caja") or 1)
-            uc       = int(line.get("unidades_por_caja") or (up * pc))
+            uc       = up * pc
+
+            # Recalcular costos en save-invoice para garantizar correctitud
+            precio_fact = float(line.get("precio_unitario_factura") or 0)
+            desc_pct_l  = float(line.get("descuento_factura_pct") or 0)
+            prov_info_s = data.get("proveedor_info", {})
+            if prov_info_s.get("descuento_afecta_costo") and desc_pct_l > 0:
+                precio_fact = money(precio_fact * (1 - desc_pct_l / 100))
+            iva_mode_s  = data.get("iva_mode", "NO_INCLUIDO")
+            iva_pct_l   = float(line.get("iva_porcentaje") or IVA_DEFAULT)
+            costo_base  = cost_without_tax(precio_fact, iva_mode_s, iva_pct_l)
+            transporte  = float(line.get("transporte_adicional") or 0)
+            costo_final = costo_base + transporte
+            pres_s      = line.get("presentacion_facturada", "Unidad")
+            precio_es_por_s = line.get("precio_es_por") or ""
+            if not precio_es_por_s:
+                qty_s = float(line.get("cantidad_facturada") or 1)
+                if qty_s == 1 and pc > 1:
+                    precio_es_por_s = "Caja"
+            cu, cp, cc = calc_costs(costo_final, pres_s, up, pc, precio_es_por_s)
 
             if prod_id:
                 # Producto existente — obtener costo anterior
