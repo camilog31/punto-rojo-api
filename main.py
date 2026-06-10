@@ -210,7 +210,7 @@ def parse_invoice(root: ET.Element) -> dict:
             "presentacion_facturada": pres,
             "unidades_por_paquete": up,
             "paquetes_por_caja": packs,
-            "unidades_por_caja": box,
+            "unidades_por_caja": up * packs,
             "venta_unidad": vu,
             "venta_paquete": vp,
             "venta_caja": vc,
