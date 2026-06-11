@@ -1041,6 +1041,49 @@ async def toggle_descuento(data: dict):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@app.post("/extract-text")
+async def extract_text(file: UploadFile = File(...)):
+    """Extrae texto de archivos Excel o Word para procesamiento con Claude."""
+    try:
+        data = await file.read()
+        filename = file.filename or ""
+        ext = filename.rsplit(".", 1)[-1].lower()
+        texto = ""
+
+        if ext in ("xlsx", "xls"):
+            try:
+                import openpyxl
+                wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True)
+                filas = []
+                for sheet in wb.worksheets:
+                    for row in sheet.iter_rows(values_only=True):
+                        fila = [str(c) if c is not None else "" for c in row]
+                        if any(f.strip() for f in fila):
+                            filas.append(" | ".join(fila))
+                texto = "\n".join(filas)
+            except Exception as e:
+                texto = f"Error leyendo Excel: {e}"
+
+        elif ext in ("docx", "doc"):
+            try:
+                import docx
+                doc = docx.Document(io.BytesIO(data))
+                texto = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+                for table in doc.tables:
+                    for row in table.rows:
+                        texto += "\n" + " | ".join(c.text for c in row.cells)
+            except Exception as e:
+                texto = f"Error leyendo Word: {e}"
+
+        else:
+            texto = data.decode("utf-8", errors="ignore")
+
+        return {"texto": texto[:15000]}  # Limitar a 15k caracteres
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
