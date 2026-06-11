@@ -387,11 +387,14 @@ def find_similar_product(supabase: Client, proveedor_nit: str, sku: str, nombre:
 
 def check_duplicate(supabase: Client, cufe: str, numero_factura: str) -> bool:
     try:
-        r = supabase.table("facturas").select("id").eq("cufe", cufe).execute()
-        if r.data:
-            return True
-        r2 = supabase.table("facturas").select("id").eq("numero_factura", numero_factura).execute()
-        return bool(r2.data)
+        if cufe:
+            r = supabase.table("facturas").select("id").eq("cufe", cufe).execute()
+            if r.data:
+                return True
+        if numero_factura:
+            r2 = supabase.table("facturas").select("id").eq("numero_factura", numero_factura).execute()
+            return bool(r2.data)
+        return False
     except Exception:
         return False
 
@@ -766,7 +769,7 @@ async def save_invoice_endpoint(data: dict):
                 "producto_id":                  prod_id,
                 "estado":                       estado,
                 "presentacion_facturada":       line.get("presentacion_facturada"),
-                "costo_presentacion_facturada": float(line.get("costo_caja_sin_iva") or cu),
+                "costo_presentacion_facturada": cc if pres_s == "Caja/Paca" else cp if pres_s == "Paquete" else cu,
                 "costo_unidad_anterior":        costo_ant,
                 "costo_unidad_nuevo":           cu,
                 "variacion_porcentaje":         variacion,
@@ -1096,7 +1099,7 @@ async def extract_lista(file: UploadFile = File(...)):
             raise HTTPException(status_code=500, detail="GOOGLE_API_KEY no configurada")
 
         genai.configure(api_key=GOOGLE_API_KEY)
-        model = genai.GenerativeModel("gemini-2.0-flash")
+        model = genai.GenerativeModel("gemini-1.5-flash")
 
         data = await file.read()
         filename = file.filename or ""
