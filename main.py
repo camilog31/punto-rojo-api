@@ -1087,20 +1087,25 @@ async def extract_text(file: UploadFile = File(...)):
 
 @app.post("/extract-lista")
 async def extract_lista(file: UploadFile = File(...)):
-    """Extrae productos y precios de una lista de precios usando Claude."""
-    import anthropic, base64
+    """Extrae productos y precios de una lista de precios usando Google Gemini."""
+    import base64, google.generativeai as genai
 
     try:
+        GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
+        if not GOOGLE_API_KEY:
+            raise HTTPException(status_code=500, detail="GOOGLE_API_KEY no configurada")
+
+        genai.configure(api_key=GOOGLE_API_KEY)
+        model = genai.GenerativeModel("gemini-1.5-flash")
+
         data = await file.read()
         filename = file.filename or ""
         ext = filename.rsplit(".", 1)[-1].lower()
 
-        client = anthropic.Anthropic()
-
         prompt = (
             "Eres un asistente que extrae listas de precios de proveedores. "
             "Analiza este documento y extrae TODOS los productos con sus precios. "
-            "Los precios pueden usar punto como separador de miles (ej: 23.243 = 23243 pesos). "
+            "Los precios pueden usar punto como separador de miles (ej: 23.243 = 23243 pesos colombianos). "
             "Devuelve los precios como numeros enteros sin puntos ni comas. "
             "Responde SOLO con JSON valido, sin texto adicional, sin backticks: "
             '{"productos":[{"nombre":"nombre del producto","sku":"codigo si existe sino vacio","precio":12500,"unidad":"unidad de medida"}]} '
@@ -1108,27 +1113,15 @@ async def extract_lista(file: UploadFile = File(...)):
         )
 
         if ext in ("jpg", "jpeg", "png", "webp"):
-            media_type = "image/jpeg" if ext in ("jpg", "jpeg") else f"image/{ext}"
-            b64 = base64.b64encode(data).decode()
-            message = client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=4000,
-                messages=[{"role": "user", "content": [
-                    {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": b64}},
-                    {"type": "text", "text": prompt}
-                ]}]
-            )
+            import PIL.Image
+            img = PIL.Image.open(io.BytesIO(data))
+            response = model.generate_content([prompt, img])
         elif ext == "pdf":
-            b64 = base64.b64encode(data).decode()
-            message = client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=4000,
-                messages=[{"role": "user", "content": [
-                    {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": b64}},
-                    {"type": "text", "text": prompt}
-                ]}]
-            )
+            # Gemini acepta PDF como bytes
+            pdf_part = {"mime_type": "application/pdf", "data": base64.b64encode(data).decode()}
+            response = model.generate_content([prompt, pdf_part])
         else:
+            # Excel/Word — extraer texto primero
             texto = ""
             if ext in ("xlsx", "xls"):
                 try:
@@ -1153,14 +1146,9 @@ async def extract_lista(file: UploadFile = File(...)):
                     texto = f"Error: {e}"
             else:
                 texto = data.decode("utf-8", errors="ignore")
+            response = model.generate_content(prompt + "\n\nContenido:\n" + texto[:10000])
 
-            message = client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=4000,
-                messages=[{"role": "user", "content": prompt + "\n\nContenido:\n" + texto[:10000]}]
-            )
-
-        texto_resp = "".join(b.text for b in message.content if hasattr(b, "text"))
+        texto_resp = response.text or ""
         clean = texto_resp.replace("```json", "").replace("```", "").strip()
         parsed = json.loads(clean)
         productos = parsed.get("productos", [])
@@ -1168,9 +1156,10 @@ async def extract_lista(file: UploadFile = File(...)):
         return {"productos": productos, "total": len(productos)}
 
     except json.JSONDecodeError:
-        raise HTTPException(status_code=422, detail="No se pudo parsear la respuesta de Claude")
+        raise HTTPException(status_code=422, detail="No se pudo parsear la respuesta de Gemini")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 if __name__ == "__main__":
     import uvicorn
