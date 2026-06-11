@@ -1096,7 +1096,7 @@ async def extract_lista(file: UploadFile = File(...)):
             raise HTTPException(status_code=500, detail="GOOGLE_API_KEY no configurada")
 
         genai.configure(api_key=GOOGLE_API_KEY)
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        model = genai.GenerativeModel("gemini-2.0-flash")
 
         data = await file.read()
         filename = file.filename or ""
