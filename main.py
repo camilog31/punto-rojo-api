@@ -970,6 +970,77 @@ async def parse_credit_note_endpoint(file: UploadFile = File(...)):
         raise HTTPException(status_code=422, detail=f"Error al parsear nota crédito: {str(e)}")
 
 
+
+@app.post("/toggle-descuento")
+async def toggle_descuento(data: dict):
+    """
+    Aplica o quita el descuento al costo de un producto desde el panel lateral.
+    Recalcula los costos usando el precio_factura_base guardado.
+    """
+    try:
+        sb = get_supabase()
+        prod_id      = data.get("producto_id")
+        aplicado     = bool(data.get("descuento_aplicado", False))
+        nota         = data.get("nota", "")
+
+        # Obtener datos actuales del producto
+        prod = sb.table("productos").select(
+            "precio_factura_base,precio_es_por,descuento_pct_factura,"
+            "unidades_por_paquete,paquetes_por_caja,presentacion_facturada,iva_porcentaje"
+        ).eq("id", prod_id).single().execute()
+
+        if not prod.data:
+            raise HTTPException(status_code=404, detail="Producto no encontrado")
+
+        p = prod.data
+        precio_base  = float(p.get("precio_factura_base") or 0)
+        desc_pct     = float(p.get("descuento_pct_factura") or 0)
+        precio_es_por = p.get("precio_es_por") or ""
+        pres         = p.get("presentacion_facturada") or "Unidad"
+        up           = int(p.get("unidades_por_paquete") or 1)
+        pc           = int(p.get("paquetes_por_caja") or 1)
+        iva_pct      = float(p.get("iva_porcentaje") or IVA_DEFAULT)
+
+        if precio_base <= 0:
+            raise HTTPException(status_code=400, detail="Este producto no tiene precio base guardado. Sube la factura nuevamente para activar esta función.")
+
+        # Calcular precio con o sin descuento
+        precio_fact = precio_base
+        if aplicado and desc_pct > 0:
+            precio_fact = money(precio_base * (1 - desc_pct / 100))
+
+        # Recalcular costos (IVA siempre NO_INCLUIDO para productos guardados)
+        costo_base = cost_without_tax(precio_fact, "NO_INCLUIDO", iva_pct)
+        cu, cp, cc = calc_costs(costo_base, pres, up, pc, precio_es_por)
+
+        # Actualizar producto
+        sb.table("productos").update({
+            "costo_unidad_sin_iva":  cu,
+            "costo_paquete_sin_iva": cp,
+            "costo_caja_sin_iva":    cc,
+            "descuento_aplicado":    aplicado,
+            "nota_descuento":        nota,
+        }).eq("id", prod_id).execute()
+
+        # Registrar en historial_descuentos
+        sb.table("historial_descuentos").insert({
+            "producto_id":   prod_id,
+            "descuento_pct": desc_pct if aplicado else 0,
+            "nota":          nota or ("Descuento activado desde panel" if aplicado else "Descuento desactivado desde panel"),
+        }).execute()
+
+        return {
+            "ok": True,
+            "costo_unidad_sin_iva":  cu,
+            "costo_paquete_sin_iva": cp,
+            "costo_caja_sin_iva":    cc,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
