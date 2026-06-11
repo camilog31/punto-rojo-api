@@ -679,6 +679,8 @@ async def save_invoice_endpoint(data: dict):
             # Recalcular costos en save-invoice para garantizar correctitud
             precio_fact = float(line.get("precio_unitario_factura") or 0)
             desc_pct_l  = float(line.get("descuento_factura_pct") or 0)
+            # Guardar precio original antes del descuento para poder recalcular desde el panel
+            precio_fact_base = precio_fact
             # Usar el toggle que envió el frontend (decidido por el usuario en el preview)
             if line.get("descuento_afecta_costo") and desc_pct_l > 0:
                 precio_fact = money(precio_fact * (1 - desc_pct_l / 100))
@@ -717,6 +719,8 @@ async def save_invoice_endpoint(data: dict):
                     "venta_paquete":        bool(line.get("venta_paquete")),
                     "venta_caja":           bool(line.get("venta_caja")),
                     "nota_descuento":       line.get("nota_descuento") or "",
+                    "precio_factura_base":  precio_fact_base,
+                    "precio_es_por":        precio_es_por_s,
                 }).eq("id", prod_id).execute()
 
                 estado = "NUEVO" if costo_ant == 0 else ("SUBIO" if cu > costo_ant else "BAJO" if cu < costo_ant else "SIN_CAMBIO")
@@ -751,6 +755,8 @@ async def save_invoice_endpoint(data: dict):
                     "ultima_factura":       invoice.get("numero_factura"),
                     "ultima_fecha":         invoice.get("fecha"),
                     "nota_descuento":       line.get("nota_descuento") or "",
+                    "precio_factura_base":   precio_fact_base,
+                    "precio_es_por":         precio_es_por_s,
                 }).execute()
                 prod_id = res.data[0]["id"]
 
