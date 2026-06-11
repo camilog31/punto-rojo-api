@@ -335,8 +335,8 @@ def add_calcs(lines: list, iva_mode: str) -> list:
 
         precio_fact = l.get("precio_unitario_factura") or (l.get("subtotal_linea", 0) / max(l.get("cantidad_facturada", 1), 1))
         
-        # Si el proveedor tiene descuento_afecta_costo=True y hay descuento en la línea,
-        # aplicar el descuento al precio antes de calcular el costo
+        # Aplicar descuento al precio solo si el usuario lo activó explícitamente en el preview
+        # (descuento_afecta_costo viene del frontend, siempre False por defecto)
         desc_pct = float(l.get("descuento_factura_pct") or 0)
         if l.get("descuento_afecta_costo") and desc_pct > 0:
             precio_fact = money(precio_fact * (1 - desc_pct / 100))
@@ -476,10 +476,9 @@ async def parse_invoice_endpoint(
         prov_info = get_proveedor_info(sb, invoice["proveedor_nit"] or "", invoice["proveedor"])
         invoice["proveedor_info"] = prov_info
 
-        # Marcar descuento_afecta_costo en cada línea según el proveedor
-        descuento_afecta = bool(prov_info.get("descuento_afecta_costo", False))
+        # descuento_afecta_costo lo decide el usuario en el preview — siempre False al parsear
         for line in invoice["lineas"]:
-            line["descuento_afecta_costo"] = descuento_afecta
+            line["descuento_afecta_costo"] = False
 
     except Exception as e:
         invoice["supabase_error"] = str(e)
@@ -680,8 +679,8 @@ async def save_invoice_endpoint(data: dict):
             # Recalcular costos en save-invoice para garantizar correctitud
             precio_fact = float(line.get("precio_unitario_factura") or 0)
             desc_pct_l  = float(line.get("descuento_factura_pct") or 0)
-            prov_info_s = data.get("proveedor_info", {})
-            if prov_info_s.get("descuento_afecta_costo") and desc_pct_l > 0:
+            # Usar el toggle que envió el frontend (decidido por el usuario en el preview)
+            if line.get("descuento_afecta_costo") and desc_pct_l > 0:
                 precio_fact = money(precio_fact * (1 - desc_pct_l / 100))
             iva_mode_s  = data.get("iva_mode", "NO_INCLUIDO")
             iva_pct_l   = float(line.get("iva_porcentaje") or IVA_DEFAULT)
@@ -769,6 +768,27 @@ async def save_invoice_endpoint(data: dict):
                 "venta_paquete":                bool(line.get("venta_paquete")),
                 "venta_caja":                   bool(line.get("venta_caja")),
             }).execute()
+
+            # Registrar en historial_descuentos si la línea trae descuento
+            desc_pct_hist = float(line.get("descuento_factura_pct") or 0)
+            if desc_pct_hist > 0:
+                desc_aplicado = bool(line.get("descuento_afecta_costo", False))
+                nota_hist = line.get("nota_descuento") or f"Descuento {desc_pct_hist:.0f}% en factura"
+                if desc_aplicado:
+                    nota_hist = f"{nota_hist} — aplicado al costo"
+                else:
+                    nota_hist = f"{nota_hist} — NO aplicado al costo"
+                sb.table("historial_descuentos").insert({
+                    "producto_id":   prod_id,
+                    "descuento_pct": desc_pct_hist,
+                    "nota":          nota_hist,
+                    "factura_id":    factura_id,
+                }).execute()
+                # Actualizar columnas de descuento en el producto
+                sb.table("productos").update({
+                    "descuento_pct_factura": desc_pct_hist,
+                    "descuento_aplicado":    desc_aplicado,
+                }).eq("id", prod_id).execute()
 
         # 4. Factura contable
         prov_info = data.get("proveedor_info", {})
