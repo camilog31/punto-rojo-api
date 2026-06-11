@@ -2,7 +2,7 @@
 Punto Rojo — API de procesamiento de facturas XML DIAN
 Servidor FastAPI que recibe ZIP/XML y devuelve los datos procesados.
 """
-import os, io, re, zipfile
+import os, io, re, zipfile, json
 import xml.etree.ElementTree as ET
 from datetime import datetime, date
 from decimal import Decimal, ROUND_HALF_UP
@@ -1081,6 +1081,94 @@ async def extract_text(file: UploadFile = File(...)):
 
         return {"texto": texto[:15000]}  # Limitar a 15k caracteres
 
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/extract-lista")
+async def extract_lista(file: UploadFile = File(...)):
+    """Extrae productos y precios de una lista de precios usando Claude."""
+    import anthropic, base64
+
+    try:
+        data = await file.read()
+        filename = file.filename or ""
+        ext = filename.rsplit(".", 1)[-1].lower()
+
+        client = anthropic.Anthropic()
+
+        prompt = (
+            "Eres un asistente que extrae listas de precios de proveedores. "
+            "Analiza este documento y extrae TODOS los productos con sus precios. "
+            "Los precios pueden usar punto como separador de miles (ej: 23.243 = 23243 pesos). "
+            "Devuelve los precios como numeros enteros sin puntos ni comas. "
+            "Responde SOLO con JSON valido, sin texto adicional, sin backticks: "
+            '{"productos":[{"nombre":"nombre del producto","sku":"codigo si existe sino vacio","precio":12500,"unidad":"unidad de medida"}]} '
+            "Solo incluye productos reales con precios numericos. Ignora encabezados, totales y notas."
+        )
+
+        if ext in ("jpg", "jpeg", "png", "webp"):
+            media_type = "image/jpeg" if ext in ("jpg", "jpeg") else f"image/{ext}"
+            b64 = base64.b64encode(data).decode()
+            message = client.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=4000,
+                messages=[{"role": "user", "content": [
+                    {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": b64}},
+                    {"type": "text", "text": prompt}
+                ]}]
+            )
+        elif ext == "pdf":
+            b64 = base64.b64encode(data).decode()
+            message = client.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=4000,
+                messages=[{"role": "user", "content": [
+                    {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": b64}},
+                    {"type": "text", "text": prompt}
+                ]}]
+            )
+        else:
+            texto = ""
+            if ext in ("xlsx", "xls"):
+                try:
+                    import openpyxl
+                    wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True)
+                    filas = []
+                    for sheet in wb.worksheets:
+                        for row in sheet.iter_rows(values_only=True):
+                            fila = [str(c) if c is not None else "" for c in row]
+                            if any(f.strip() for f in fila):
+                                filas.append(" | ".join(fila))
+                    texto = "\n".join(filas)
+                except Exception as e:
+                    texto = f"Error: {e}"
+            elif ext in ("docx", "doc"):
+                try:
+                    import docx as docxlib
+                    doc = docxlib.Document(io.BytesIO(data))
+                    lineas = [p.text for p in doc.paragraphs if p.text.strip()]
+                    texto = "\n".join(lineas)
+                except Exception as e:
+                    texto = f"Error: {e}"
+            else:
+                texto = data.decode("utf-8", errors="ignore")
+
+            message = client.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=4000,
+                messages=[{"role": "user", "content": prompt + "\n\nContenido:\n" + texto[:10000]}]
+            )
+
+        texto_resp = "".join(b.text for b in message.content if hasattr(b, "text"))
+        clean = texto_resp.replace("```json", "").replace("```", "").strip()
+        parsed = json.loads(clean)
+        productos = parsed.get("productos", [])
+
+        return {"productos": productos, "total": len(productos)}
+
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=422, detail="No se pudo parsear la respuesta de Claude")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
