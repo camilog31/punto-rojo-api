@@ -246,6 +246,11 @@ def parse_invoice(root: ET.Element) -> dict:
         else "INCLUIDO"
     )
 
+    # Forma de pago desde XML
+    payment_code = first_text(root, ["PaymentMeans", "PaymentMeansCode"]) or ""
+    CONTADO_CODES = {"10", "48", "49", "1"}
+    forma_pago_xml = "CONTADO" if payment_code.strip() in CONTADO_CODES else ("CREDITO" if payment_code.strip() else "")
+
     return {
         "proveedor": supplier,
         "proveedor_nit": proveedor_nit,
@@ -258,6 +263,7 @@ def parse_invoice(root: ET.Element) -> dict:
         "retefuente_xml": money(retefuente_xml),
         "inpusu": money(inpusu),
         "iva_detectado": iva_detectado,
+        "forma_pago_xml": forma_pago_xml,
         "lineas": lines,
     }
 
@@ -752,7 +758,40 @@ async def save_invoice_endpoint(data: dict):
 
         # 4. Factura contable
         prov_info  = data.get("proveedor_info", {})
-        forma_pago = prov_info.get("forma_pago", "CREDITO")
+
+        # Forma de pago: priorizar XML, luego proveedores_contables, default CREDITO
+        forma_pago_xml = invoice.get("forma_pago_xml", "")
+        forma_pago = forma_pago_xml or prov_info.get("forma_pago") or "CREDITO"
+
+        # Actualizar forma_pago y requiere_acuse en proveedores_contables si tenemos id
+        pc_id = prov_info.get("id")
+        if pc_id and forma_pago_xml:
+            try:
+                requiere_acuse = forma_pago != "CONTADO"
+                sb.table("proveedores_contables").update({
+                    "forma_pago": forma_pago,
+                    "requiere_acuse": requiere_acuse,
+                }).eq("id", pc_id).execute()
+            except Exception:
+                pass
+
+        # Si proveedor no existe en proveedores_contables, crearlo
+        if not pc_id and nombre:
+            try:
+                nuevo_pc = sb.table("proveedores_contables").insert({
+                    "proveedor_nombre": nombre,
+                    "nit": nit or "",
+                    "forma_pago": forma_pago,
+                    "requiere_acuse": forma_pago != "CONTADO",
+                    "aplica_retefuente": "NO",
+                    "descuento_pct": 0,
+                    "regimen": "COMUN",
+                    "descuento_afecta_costo": False,
+                }).execute()
+                if nuevo_pc.data:
+                    pc_id = nuevo_pc.data[0]["id"]
+            except Exception:
+                pass
         desc_pct   = float(prov_info.get("descuento_pct") or 0)
         subtotal   = float(invoice.get("subtotal_factura") or 0)
         iva_val    = float(invoice.get("iva_factura") or 0)
