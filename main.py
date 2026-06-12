@@ -1344,7 +1344,7 @@ async def enviar_reporte_costos(data: dict):
             "costo_paquete_sin_iva,costo_caja_sin_iva,venta_unidad,venta_paquete,venta_caja,proveedor_nombre"
         ).in_("id", prod_ids).execute()
 
-        facts_res = sb.table("facturas").select("id,numero_factura,proveedor").in_("id", fact_ids).execute() if fact_ids else type("R", (), {"data": []})()
+        facts_res = sb.table("facturas").select("id,numero_factura").in_("id", fact_ids).execute() if fact_ids else type("R", (), {"data": []})()
 
         prods_map = {p["id"]: p for p in (prods_res.data or [])}
         facts_map = {f["id"]: f for f in (facts_res.data or [])}
