@@ -387,14 +387,11 @@ def find_similar_product(supabase: Client, proveedor_nit: str, sku: str, nombre:
 
 def check_duplicate(supabase: Client, cufe: str, numero_factura: str) -> bool:
     try:
-        if cufe:
-            r = supabase.table("facturas").select("id").eq("cufe", cufe).execute()
-            if r.data:
-                return True
-        if numero_factura:
-            r2 = supabase.table("facturas").select("id").eq("numero_factura", numero_factura).execute()
-            return bool(r2.data)
-        return False
+        r = supabase.table("facturas").select("id").eq("cufe", cufe).execute()
+        if r.data:
+            return True
+        r2 = supabase.table("facturas").select("id").eq("numero_factura", numero_factura).execute()
+        return bool(r2.data)
     except Exception:
         return False
 
@@ -634,10 +631,28 @@ async def save_invoice_endpoint(data: dict):
         # 1. Buscar o crear proveedor
         nit    = invoice.get("proveedor_nit", "")
         nombre = invoice.get("proveedor", "")
-        r = sb.table("proveedores").select("id").eq("nit", nit).limit(1).execute() if nit else None
-        if r and r.data:
-            proveedor_id = r.data[0]["id"]
-        else:
+        proveedor_id = None
+
+        # Buscar por NIT exacto primero
+        if nit:
+            r = sb.table("proveedores").select("id").eq("nit", nit).limit(1).execute()
+            if r.data:
+                proveedor_id = r.data[0]["id"]
+
+        # Si no encontró por NIT, buscar por nombre similar
+        if not proveedor_id:
+            try:
+                r_sim = sb.rpc("match_proveedor_simple", {"nombre_buscar": nombre}).execute()
+                if r_sim.data:
+                    proveedor_id = r_sim.data[0]["id"]
+                    # Actualizar NIT si no lo tenía
+                    if nit and not r_sim.data[0].get("nit"):
+                        sb.table("proveedores").update({"nit": nit}).eq("id", proveedor_id).execute()
+            except Exception:
+                pass
+
+        # Si no existe, crear nuevo
+        if not proveedor_id:
             r2 = sb.table("proveedores").insert({"nombre": nombre, "nit": nit}).execute()
             proveedor_id = r2.data[0]["id"]
 
@@ -769,7 +784,7 @@ async def save_invoice_endpoint(data: dict):
                 "producto_id":                  prod_id,
                 "estado":                       estado,
                 "presentacion_facturada":       line.get("presentacion_facturada"),
-                "costo_presentacion_facturada": cc if pres_s == "Caja/Paca" else cp if pres_s == "Paquete" else cu,
+                "costo_presentacion_facturada": float(line.get("costo_caja_sin_iva") or cu),
                 "costo_unidad_anterior":        costo_ant,
                 "costo_unidad_nuevo":           cu,
                 "variacion_porcentaje":         variacion,
