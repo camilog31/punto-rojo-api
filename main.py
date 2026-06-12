@@ -1307,6 +1307,195 @@ async def limpiar_tablas(req: LimpiarRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ─── Reporte de costos por email ─────────────────────────────────────────────
+
+@app.post("/enviar-reporte-costos")
+async def enviar_reporte_costos(data: dict):
+    try:
+        sb  = get_supabase()
+        fecha = data.get("fecha", "")
+        if not fecha:
+            raise HTTPException(status_code=400, detail="Se requiere una fecha")
+
+        # Obtener correo configurado
+        cfg    = sb.table("config_admin").select("valor").eq("clave", "correo_reporte").single().execute()
+        correo = cfg.data.get("valor", "") if cfg.data else ""
+        if not correo:
+            raise HTTPException(status_code=400, detail="No hay correo configurado en Admin")
+
+        # Obtener historial del día (solo NUEVO, SUBIO, BAJO)
+        desde = f"{fecha}T00:00:00"
+        hasta = f"{fecha}T23:59:59"
+        hist_res = sb.table("historial_costos").select(
+            "producto_id,estado,costo_unidad_anterior,costo_unidad_nuevo,variacion_porcentaje,factura_id"
+        ).gte("creada_en", desde).lte("creada_en", hasta).in_("estado", ["NUEVO", "SUBIO", "BAJO"]).order("estado").execute()
+
+        hist = hist_res.data or []
+        if not hist:
+            raise HTTPException(status_code=400, detail="No hay productos con cambios en esa fecha")
+
+        # Obtener productos y facturas relacionados
+        prod_ids = list({h["producto_id"] for h in hist})
+        fact_ids = list({h["factura_id"] for h in hist if h.get("factura_id")})
+
+        prods_res = sb.table("productos").select(
+            "id,nombre_punto_rojo,sku_interno,categoria,unidades_por_paquete,paquetes_por_caja,unidades_por_caja,"
+            "markup_unidad_pct,markup_paquete_pct,markup_caja_pct,"
+            "costo_paquete_sin_iva,costo_caja_sin_iva,venta_unidad,venta_paquete,venta_caja,proveedor_nombre"
+        ).in_("id", prod_ids).execute()
+
+        facts_res = sb.table("facturas").select("id,numero_factura,proveedor").in_("id", fact_ids).execute() if fact_ids else type("R", (), {"data": []})()
+
+        prods_map = {p["id"]: p for p in (prods_res.data or [])}
+        facts_map = {f["id"]: f for f in (facts_res.data or [])}
+
+        # Combinar datos
+        items = []
+        for h in hist:
+            p = prods_map.get(h["producto_id"], {})
+            f = facts_map.get(h.get("factura_id"), {})
+            cu = h.get("costo_unidad_nuevo") or 0
+            cp = p.get("costo_paquete_sin_iva") or cu * (p.get("unidades_por_paquete") or 1)
+            cc = p.get("costo_caja_sin_iva") or cu * (p.get("unidades_por_caja") or 1)
+            mu = p.get("markup_unidad_pct") or 40
+            mp = p.get("markup_paquete_pct") or 35
+            mc = p.get("markup_caja_pct") or 30
+            items.append({
+                "estado":      h.get("estado"),
+                "nombre":      p.get("nombre_punto_rojo") or "—",
+                "sku":         p.get("sku_interno") or "—",
+                "categoria":   p.get("categoria") or "—",
+                "proveedor":   p.get("proveedor_nombre") or f.get("proveedor") or "—",
+                "factura":     f.get("numero_factura") or "—",
+                "costo_ant":   h.get("costo_unidad_anterior") or 0,
+                "costo_nuevo": cu,
+                "variacion":   h.get("variacion_porcentaje") or 0,
+                "venta_unidad":  p.get("venta_unidad", True),
+                "venta_paquete": p.get("venta_paquete", False),
+                "venta_caja":    p.get("venta_caja", False),
+                "up": p.get("unidades_por_paquete") or 1,
+                "uc": p.get("unidades_por_caja") or 1,
+                "precio_unidad":  round((cu * 1.19) / (1 - mu / 100)) if cu and mu < 100 else 0,
+                "precio_paquete": round((cp * 1.19) / (1 - mp / 100)) if cp and mp < 100 else 0,
+                "precio_caja":    round((cc * 1.19) / (1 - mc / 100)) if cc and mc < 100 else 0,
+                "mu": mu, "mp": mp, "mc": mc,
+            })
+
+        def fmt(n): return f"${int(round(n)):,}".replace(",", ".")
+        def fecha_bonita(f): 
+            try:
+                from datetime import datetime
+                return datetime.strptime(f, "%Y-%m-%d").strftime("%d de %B de %Y").replace(
+                    "January","enero").replace("February","febrero").replace("March","marzo").replace(
+                    "April","abril").replace("May","mayo").replace("June","junio").replace(
+                    "July","julio").replace("August","agosto").replace("September","septiembre").replace(
+                    "October","octubre").replace("November","noviembre").replace("December","diciembre")
+            except: return f
+
+        def estado_color(estado):
+            return {"NUEVO": "#C41E2C", "SUBIO": "#ef4444", "BAJO": "#22c55e"}.get(estado, "#888")
+
+        def estado_label(estado):
+            return {"NUEVO": "NUEVO", "SUBIO": "↑ SUBIÓ", "BAJO": "↓ BAJÓ"}.get(estado, estado)
+
+        def render_precios(item):
+            precios = []
+            if item["venta_unidad"]:
+                precios.append(f'<td style="padding:4px 8px;"><span style="font-size:10px;color:#888;">Unidad</span><br><strong style="font-size:13px;">{fmt(item["precio_unidad"])}</strong></td>')
+            if item["venta_paquete"]:
+                precios.append(f'<td style="padding:4px 8px;"><span style="font-size:10px;color:#888;">Paq x{item["up"]}</span><br><strong style="font-size:13px;">{fmt(item["precio_paquete"])}</strong></td>')
+            if item["venta_caja"]:
+                precios.append(f'<td style="padding:4px 8px;"><span style="font-size:10px;color:#888;">Caja x{item["uc"]}</span><br><strong style="font-size:13px;">{fmt(item["precio_caja"])}</strong></td>')
+            return "".join(precios)
+
+        # Agrupar por estado
+        nuevos   = [i for i in items if i["estado"] == "NUEVO"]
+        subieron = [i for i in items if i["estado"] == "SUBIO"]
+        bajaron  = [i for i in items if i["estado"] == "BAJO"]
+
+        def render_grupo(titulo, color, grupo):
+            if not grupo: return ""
+            filas = ""
+            for item in grupo:
+                variacion_html = ""
+                if item["variacion"] != 0:
+                    arrow = "↑" if item["variacion"] > 0 else "↓"
+                    col   = "#ef4444" if item["variacion"] > 0 else "#22c55e"
+                    variacion_html = f'<span style="color:{col};font-weight:bold;margin-left:6px;">{arrow}{abs(item["variacion"])}%</span>'
+
+                costo_ant_html = ""
+                if item["costo_ant"] > 0:
+                    costo_ant_html = f'<span style="color:#aaa;font-size:11px;text-decoration:line-through;margin-right:6px;">{fmt(item["costo_ant"])}</span>'
+
+                filas += f"""
+                <tr style="border-bottom:1px solid #f0f0f0;">
+                  <td style="padding:10px 12px;vertical-align:top;">
+                    <strong style="font-size:13px;color:#111;">{item["nombre"]}</strong><br>
+                    <span style="font-size:11px;color:#888;">{item["categoria"]} · {item["proveedor"]}</span><br>
+                    <span style="font-size:10px;color:#bbb;">Factura: {item["factura"]}</span>
+                  </td>
+                  <td style="padding:10px 12px;vertical-align:top;white-space:nowrap;">
+                    {costo_ant_html}
+                    <strong style="font-size:13px;color:#111;">{fmt(item["costo_nuevo"])}</strong>
+                    {variacion_html}
+                  </td>
+                  <td style="padding:10px 12px;vertical-align:top;">
+                    <table cellpadding="0" cellspacing="0"><tr>{render_precios(item)}</tr></table>
+                  </td>
+                </tr>"""
+
+            return f"""
+            <div style="margin-bottom:20px;">
+              <div style="background:{color};padding:10px 16px;border-radius:8px 8px 0 0;">
+                <strong style="color:white;font-size:13px;">{titulo} ({len(grupo)})</strong>
+              </div>
+              <table width="100%" cellpadding="0" cellspacing="0" style="background:white;border-radius:0 0 8px 8px;overflow:hidden;border:1px solid #eee;border-top:none;">
+                <thead>
+                  <tr style="background:#f9f9f9;border-bottom:1px solid #eee;">
+                    <th style="padding:8px 12px;text-align:left;font-size:11px;color:#888;font-weight:600;text-transform:uppercase;">Producto</th>
+                    <th style="padding:8px 12px;text-align:left;font-size:11px;color:#888;font-weight:600;text-transform:uppercase;">Costo</th>
+                    <th style="padding:8px 12px;text-align:left;font-size:11px;color:#888;font-weight:600;text-transform:uppercase;">Precios de venta</th>
+                  </tr>
+                </thead>
+                <tbody>{filas}</tbody>
+              </table>
+            </div>"""
+
+        resumen_html = f"""
+        <div style="display:flex;gap:12px;margin-bottom:24px;flex-wrap:wrap;">
+          {"".join(f'<div style="flex:1;min-width:80px;background:white;border-radius:8px;padding:14px;text-align:center;border-top:3px solid {estado_color(e)};"><strong style="font-size:22px;color:{estado_color(e)};">{c}</strong><br><span style="font-size:11px;color:#888;">{l}</span></div>'
+            for e, c, l in [("NUEVO", len(nuevos), "Nuevos"), ("SUBIO", len(subieron), "Subieron"), ("BAJO", len(bajaron), "Bajaron")])}
+        </div>"""
+
+        html = f"""
+        <div style="font-family:sans-serif;max-width:680px;margin:0 auto;background:#f4f4f5;padding:32px;border-radius:12px;">
+          <div style="background:#C41E2C;padding:20px 24px;border-radius:8px;margin-bottom:24px;">
+            <h1 style="color:white;margin:0;font-size:20px;">Reporte de Costos</h1>
+            <p style="color:rgba(255,255,255,0.75);margin:6px 0 0;font-size:13px;">{fecha_bonita(fecha)} · Punto Rojo</p>
+          </div>
+          {resumen_html}
+          {render_grupo("🆕 Productos nuevos",   "#C41E2C", nuevos)}
+          {render_grupo("📈 Subieron de precio", "#ef4444", subieron)}
+          {render_grupo("📉 Bajaron de precio",  "#22c55e", bajaron)}
+          <p style="text-align:center;color:#aaa;font-size:11px;margin:0;">Generado desde Costos Punto Rojo</p>
+        </div>"""
+
+        resend.api_key = os.getenv("RESEND_API_KEY", "")
+        resend.Emails.send({
+            "from":    "Punto Rojo <onboarding@resend.dev>",
+            "to":      [correo],
+            "subject": f"Reporte de Costos {fecha_bonita(fecha)} - Punto Rojo",
+            "html":    html,
+        })
+
+        return {"ok": True, "correo": correo, "total": len(items)}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
