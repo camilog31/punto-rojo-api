@@ -1535,6 +1535,62 @@ async def enviar_reporte_costos(data: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ─── Eliminar factura ────────────────────────────────────────────────────────
+
+@app.delete("/eliminar-factura/{factura_id}")
+async def eliminar_factura(factura_id: int):
+    try:
+        sb = get_supabase()
+
+        # 1. Obtener datos de la factura
+        fac = sb.table("facturas").select("id,numero_factura").eq("id", factura_id).single().execute()
+        if not fac.data:
+            raise HTTPException(status_code=404, detail="Factura no encontrada")
+        numero_factura = fac.data["numero_factura"]
+
+        # 2. Obtener productos afectados por esta factura
+        hist = sb.table("historial_costos").select("producto_id").eq("factura_id", factura_id).execute()
+        prod_ids = list({h["producto_id"] for h in (hist.data or [])})
+
+        # 3. Borrar historial_descuentos de esa factura
+        sb.table("historial_descuentos").delete().eq("factura_id", factura_id).execute()
+
+        # 4. Borrar historial_costos de esa factura
+        sb.table("historial_costos").delete().eq("factura_id", factura_id).execute()
+
+        # 5. Borrar notas_credito relacionadas
+        fc = sb.table("facturas_contables").select("id").eq("numero_factura", numero_factura).execute()
+        if fc.data:
+            sb.table("notas_credito").delete().eq("factura_contable_id", fc.data[0]["id"]).execute()
+
+        # 6. Borrar factura contable
+        sb.table("facturas_contables").delete().eq("numero_factura", numero_factura).execute()
+
+        # 7. Restaurar costo anterior en productos (desde historial previo)
+        for prod_id in prod_ids:
+            try:
+                ultimo = sb.table("historial_costos").select(
+                    "costo_unidad_nuevo,costo_presentacion_facturada"
+                ).eq("producto_id", prod_id).order("id", desc=True).limit(1).execute()
+                if ultimo.data:
+                    sb.table("productos").update({
+                        "costo_unidad_sin_iva": ultimo.data[0]["costo_unidad_nuevo"],
+                    }).eq("id", prod_id).execute()
+                # Si ya no tiene historial, no tocar el producto
+            except Exception:
+                pass
+
+        # 8. Borrar la factura principal
+        sb.table("facturas").delete().eq("id", factura_id).execute()
+
+        return {"ok": True, "numero_factura": numero_factura, "productos_afectados": len(prod_ids)}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
