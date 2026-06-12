@@ -442,6 +442,7 @@ async def parse_invoice_endpoint(
     raw = await file.read()
     filename = file.filename or ""
 
+    pdf_base64 = ""
     try:
         if filename.lower().endswith(".zip"):
             with zipfile.ZipFile(io.BytesIO(raw)) as z:
@@ -449,6 +450,10 @@ async def parse_invoice_endpoint(
                 if not xml_names:
                     raise HTTPException(status_code=400, detail="El ZIP no contiene archivos XML.")
                 raw_xml = z.read(xml_names[0])
+                pdf_names = [n for n in z.namelist() if n.lower().endswith(".pdf")]
+                if pdf_names:
+                    import base64 as b64lib
+                    pdf_base64 = b64lib.b64encode(z.read(pdf_names[0])).decode("utf-8")
         elif filename.lower().endswith(".xml"):
             raw_xml = raw
         else:
@@ -524,6 +529,7 @@ async def parse_invoice_endpoint(
 
     # Calcular costos y precios DESPUÉS del match para usar datos correctos de BD
     invoice["lineas"] = add_calcs(invoice["lineas"], iva_mode)
+    invoice["pdf_base64"] = pdf_base64
 
     return invoice
 
@@ -631,28 +637,10 @@ async def save_invoice_endpoint(data: dict):
         # 1. Buscar o crear proveedor
         nit    = invoice.get("proveedor_nit", "")
         nombre = invoice.get("proveedor", "")
-        proveedor_id = None
-
-        # Buscar por NIT exacto primero
-        if nit:
-            r = sb.table("proveedores").select("id").eq("nit", nit).limit(1).execute()
-            if r.data:
-                proveedor_id = r.data[0]["id"]
-
-        # Si no encontró por NIT, buscar por nombre similar
-        if not proveedor_id:
-            try:
-                r_sim = sb.rpc("match_proveedor_simple", {"nombre_buscar": nombre}).execute()
-                if r_sim.data:
-                    proveedor_id = r_sim.data[0]["id"]
-                    # Actualizar NIT si no lo tenía
-                    if nit and not r_sim.data[0].get("nit"):
-                        sb.table("proveedores").update({"nit": nit}).eq("id", proveedor_id).execute()
-            except Exception:
-                pass
-
-        # Si no existe, crear nuevo
-        if not proveedor_id:
+        r = sb.table("proveedores").select("id").eq("nit", nit).limit(1).execute() if nit else None
+        if r and r.data:
+            proveedor_id = r.data[0]["id"]
+        else:
             r2 = sb.table("proveedores").insert({"nombre": nombre, "nit": nit}).execute()
             proveedor_id = r2.data[0]["id"]
 
