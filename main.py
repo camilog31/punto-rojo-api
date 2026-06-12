@@ -74,15 +74,6 @@ def extract_invoice_xml(raw_xml: bytes) -> ET.Element:
 # ─── Detección de presentación ───────────────────────────────────────────────
 
 def detect_packaging(desc: str):
-    """Detecta la estructura de empaque de la descripción del producto.
-    Retorna (unidades_por_paquete, unidades_por_caja, paquetes_por_caja)
-
-    Reglas:
-    - Si hay "X N (CJxM)" → up=N, pc=M, uc=N*M
-    - Si solo hay "(CJxN)" → caja directa up=1, pc=N, uc=N
-    - Si hay "PCN" o "PQN" → paquete de N unidades
-    - Si hay "CN" al final → caja de N paquetes (COPA FAYCO C10)
-    """
     if not desc:
         return 1, 1, 1
     d = desc.upper()
@@ -120,7 +111,6 @@ def detect_packaging(desc: str):
     return 1, 1, 1
 
 def default_sale_flags(pres: str, up: int, packs: int, box: int):
-    """Determina qué presentaciones se venden por defecto."""
     if pres == "Caja/Paca":
         vu = up > 1
         vp = packs > 1
@@ -183,12 +173,11 @@ def parse_invoice(root: ET.Element) -> dict:
             pct = parse_decimal(first_text(ta, ["TaxSubtotal","TaxCategory","Percent"]), 0)
             if pct: iva_pct = pct
 
-        # Descuento en línea
         desc_amt = 0.0
         desc_pct = 0.0
         for ac in all_descendants(line, "AllowanceCharge"):
             charge_ind = first_text(ac, ["ChargeIndicator"])
-            if charge_ind.lower() == "false":  # es descuento
+            if charge_ind.lower() == "false":
                 desc_amt = parse_decimal(first_text(ac, ["Amount"]))
                 desc_pct = parse_decimal(first_text(ac, ["MultiplierFactorNumeric"]))
 
@@ -226,8 +215,6 @@ def parse_invoice(root: ET.Element) -> dict:
     if not iva:      iva = sum(x["iva_linea"] for x in lines)
     if not total:    total = subtotal + iva
 
-    # Leer retefuente del XML si viene explícita
-    # En DIAN: TaxTotal con TaxScheme ID=06 o Name contiene "RETE"
     retefuente_xml = 0.0
     for ta in all_descendants(root, "TaxTotal"):
         tax_id   = ""
@@ -238,7 +225,6 @@ def parse_invoice(root: ET.Element) -> dict:
         if tax_id in ("06", "05", "07") or "RETE" in tax_name or "RTEFUENTE" in tax_name:
             retefuente_xml += parse_decimal(first_text(ta, ["TaxAmount"]))
 
-    # Detectar INPUSU
     inpusu = 0.0
     for note_el in all_descendants(root, "Note"):
         note_text = (note_el.text or "").upper()
@@ -250,7 +236,6 @@ def parse_invoice(root: ET.Element) -> dict:
                 except Exception:
                     pass
 
-    # IVA mode
     total_ajustado = total - inpusu
     tolerancia = max(500, total * 0.02)
     iva_detectado = (
@@ -282,20 +267,9 @@ def cost_without_tax(precio: float, iva_mode: str, iva_pct: float = IVA_DEFAULT)
     return money(precio)
 
 def calc_costs(costo_fact: float, pres: str, up: int, pc: int, precio_es_por: str = ""):
-    """
-    costo_fact = precio de la unidad facturada según la presentación.
-    
-    Regla por presentación:
-    - Caja/Paca → precio es de la CAJA completa
-    - Paquete   → precio es del PAQUETE
-    - Unidad    → precio es unitario
-    
-    precio_es_por permite override manual si el usuario lo necesita.
-    """
     up = max(up, 1); pc = max(pc, 1)
     uc = up * pc
 
-    # Override manual del usuario
     base = precio_es_por if precio_es_por else (
         "Caja"    if pres == "Caja/Paca" else
         "Paquete" if pres == "Paquete"   else
@@ -310,7 +284,7 @@ def calc_costs(costo_fact: float, pres: str, up: int, pc: int, precio_es_por: st
         cp = costo_fact
         cu = money(cp / up) if up > 1 else cp
         cc = money(cp * pc)
-    else:  # Unidad
+    else:
         cu = costo_fact
         cp = money(cu * up)
         cc = money(cu * uc)
@@ -334,9 +308,6 @@ def add_calcs(lines: list, iva_mode: str) -> list:
         mc   = float(l.get("markup_caja_pct") or 30)
 
         precio_fact = l.get("precio_unitario_factura") or (l.get("subtotal_linea", 0) / max(l.get("cantidad_facturada", 1), 1))
-        
-        # Aplicar descuento al precio solo si el usuario lo activó explícitamente en el preview
-        # (descuento_afecta_costo viene del frontend, siempre False por defecto)
         desc_pct = float(l.get("descuento_factura_pct") or 0)
         if l.get("descuento_afecta_costo") and desc_pct > 0:
             precio_fact = money(precio_fact * (1 - desc_pct / 100))
@@ -346,7 +317,6 @@ def add_calcs(lines: list, iva_mode: str) -> list:
         costo_fact_final = costo_base + transporte
 
         precio_es_por = l.get("precio_es_por") or ""
-        # Auto-detectar si no hay override: qty=1 con pc>1 → precio es por caja
         if not precio_es_por:
             qty = float(l.get("cantidad_facturada") or 1)
             if qty == 1 and pc > 1:
@@ -368,14 +338,10 @@ def add_calcs(lines: list, iva_mode: str) -> list:
 # ─── Búsqueda de productos similares en Supabase ─────────────────────────────
 
 def find_similar_product(supabase: Client, proveedor_nit: str, sku: str, nombre: str):
-    """Busca si el producto ya existe en la BD para mostrar match.
-    Si existe, devuelve todos los campos para pre-llenar el formulario.
-    """
     try:
-        # Buscar por SKU proveedor exacto
         r = supabase.table("productos").select(
             "id,sku_interno,sku_proveedor,nombre_punto_rojo,categoria,"
-            "presentacion_facturada,unidades_por_paquete,paquetes_por_caja,unidades_por_caja,"
+            "presentacion_facturada,precio_es_por,unidades_por_paquete,paquetes_por_caja,unidades_por_caja,"
             "costo_unidad_sin_iva,markup_unidad_pct,markup_paquete_pct,markup_caja_pct,"
             "venta_unidad,venta_paquete,venta_caja,costo_transporte"
         ).eq("sku_proveedor", sku).eq("activo", True).limit(1).execute()
@@ -387,30 +353,29 @@ def find_similar_product(supabase: Client, proveedor_nit: str, sku: str, nombre:
 
 def check_duplicate(supabase: Client, cufe: str, numero_factura: str) -> bool:
     try:
-        r = supabase.table("facturas").select("id").eq("cufe", cufe).execute()
-        if r.data:
-            return True
-        r2 = supabase.table("facturas").select("id").eq("numero_factura", numero_factura).execute()
-        return bool(r2.data)
+        if cufe:
+            r = supabase.table("facturas").select("id").eq("cufe", cufe).execute()
+            if r.data:
+                return True
+        if numero_factura:
+            r2 = supabase.table("facturas").select("id").eq("numero_factura", numero_factura).execute()
+            return bool(r2.data)
+        return False
     except Exception:
         return False
 
 def get_proveedor_info(supabase: Client, nit: str, nombre: str) -> dict:
-    """Busca el proveedor en proveedores_contables para obtener configuración."""
     try:
-        # Buscar por NIT primero (más exacto)
         if nit:
             r = supabase.table("proveedores_contables").select(
                 "id,proveedor_nombre,forma_pago,descuento_pct,aplica_retefuente,tipo,regimen,descuento_afecta_costo"
             ).eq("nit", nit).limit(1).execute()
             if r.data:
                 return r.data[0]
-        
-        # Buscar por nombre similar usando la función SQL
+
         r2 = supabase.rpc("match_proveedor", {"nombre_buscar": nombre}).execute()
         if r2.data:
             row = r2.data[0]
-            # Normalizar campos — match_proveedor devuelve "nombre" en lugar de "proveedor_nombre"
             return {
                 "id":                    row.get("id"),
                 "proveedor_nombre":      row.get("nombre") or row.get("proveedor_nombre"),
@@ -438,7 +403,6 @@ async def parse_invoice_endpoint(
     file: UploadFile = File(...),
     iva_mode_override: Optional[str] = None,
 ):
-    """Recibe un ZIP o XML de factura DIAN y devuelve los datos procesados."""
     raw = await file.read()
     filename = file.filename or ""
 
@@ -467,24 +431,15 @@ async def parse_invoice_endpoint(
     except Exception as e:
         raise HTTPException(status_code=422, detail=f"Error al leer el XML: {str(e)}")
 
-    # Usar iva_mode detectado o el override
     iva_mode = iva_mode_override or invoice["iva_detectado"]
 
-    # Conectar a Supabase para enriquecer datos
     try:
         sb = get_supabase()
-
-        # Verificar duplicado
         invoice["es_duplicado"] = check_duplicate(sb, invoice["cufe"], invoice["numero_factura"])
-
-        # Info del proveedor contable — necesaria ANTES de calcular costos
         prov_info = get_proveedor_info(sb, invoice["proveedor_nit"] or "", invoice["proveedor"])
         invoice["proveedor_info"] = prov_info
-
-        # descuento_afecta_costo lo decide el usuario en el preview — siempre False al parsear
         for line in invoice["lineas"]:
             line["descuento_afecta_costo"] = False
-
     except Exception as e:
         invoice["supabase_error"] = str(e)
         invoice["es_duplicado"] = False
@@ -492,11 +447,8 @@ async def parse_invoice_endpoint(
 
     invoice["iva_mode_usado"] = iva_mode
 
-    # Conectar a Supabase para match de productos
     try:
         sb = get_supabase()
-
-        # Match de productos — si existe, pre-llenar con datos guardados
         for line in invoice["lineas"]:
             match_info = find_similar_product(sb, invoice["proveedor_nit"] or "", line["sku_proveedor"], line["nombre_factura"])
             line["match_tipo"]  = match_info["match"]
@@ -504,15 +456,13 @@ async def parse_invoice_endpoint(
 
             if match_info["match"] == "Exacto" and match_info["producto"]:
                 p = match_info["producto"]
-                # Pre-llenar con datos guardados (nombre, márgenes, presentación, cómo se vende)
-                # El costo se recalcula siempre desde la factura nueva
                 line["producto_id"]          = p.get("id")
                 line["nombre_punto_rojo"]    = p.get("nombre_punto_rojo") or line["nombre_factura"]
                 line["categoria"]            = p.get("categoria") or ""
                 line["presentacion_facturada"] = p.get("presentacion_facturada") or line["presentacion_facturada"]
+                line["precio_es_por"]        = p.get("precio_es_por") or ""
                 line["unidades_por_paquete"] = p.get("unidades_por_paquete") or line["unidades_por_paquete"]
                 line["paquetes_por_caja"]    = p.get("paquetes_por_caja") or line["paquetes_por_caja"]
-                # No sobreescribir unidades_por_caja desde BD — recalcular siempre
                 up_match = p.get("unidades_por_paquete") or line["unidades_por_paquete"]
                 pc_match = p.get("paquetes_por_caja") or line["paquetes_por_caja"]
                 line["unidades_por_caja"]    = up_match * pc_match
@@ -527,7 +477,6 @@ async def parse_invoice_endpoint(
     except Exception as e:
         invoice["supabase_match_error"] = str(e)
 
-    # Calcular costos y precios DESPUÉS del match para usar datos correctos de BD
     invoice["lineas"] = add_calcs(invoice["lineas"], iva_mode)
     invoice["pdf_base64"] = pdf_base64
 
@@ -535,38 +484,23 @@ async def parse_invoice_endpoint(
 
 
 def recalcular_retefuente_grupo(supabase: Client, proveedor: str, fecha_factura: str, aplica_rete: str) -> None:
-    """Recalcula la retefuente para todas las facturas del mismo proveedor en la misma fecha.
-    Si la suma de subtotales supera la base mínima, aplica retefuente a todas.
-    Si no supera, quita la retefuente a todas.
-    """
     if aplica_rete != "SI":
         return
     try:
-        # Obtener parámetro vigente
         params = supabase.table("parametros_retefuente").select(
             "porcentaje,base_minima"
         ).eq("aplica_a", "COMPRAS").eq("activo", True).lte("vigente_desde", fecha_factura).gte("vigente_hasta", fecha_factura).limit(1).execute()
-        
         if not params.data:
             return
-        
         pct_rete = float(params.data[0].get("porcentaje") or 2.5)
         base_min = float(params.data[0].get("base_minima") or 1148000)
-        
-        # Obtener todas las facturas del mismo proveedor en la misma fecha
         facturas = supabase.table("facturas_contables").select(
             "id,subtotal,retefuente"
         ).eq("proveedor", proveedor).eq("fecha_factura", fecha_factura).execute()
-        
         if not facturas.data:
             return
-        
-        # Calcular suma total de subtotales
         total_subtotal = sum(float(f.get("subtotal") or 0) for f in facturas.data)
-        
-        # Determinar si aplica retefuente al grupo
         if total_subtotal >= base_min:
-            # Distribuir retefuente proporcionalmente entre las facturas
             for f in facturas.data:
                 subtotal_f = float(f.get("subtotal") or 0)
                 rete_f = round(subtotal_f * pct_rete / 100, 2)
@@ -581,7 +515,6 @@ def recalcular_retefuente_grupo(supabase: Client, proveedor: str, fecha_factura:
                         "valor_a_pagar": nuevo_valor
                     }).eq("id", f["id"]).execute()
         else:
-            # No aplica retefuente — quitar a todas
             for f in facturas.data:
                 if float(f.get("retefuente") or 0) > 0:
                     valor_pagar_query = supabase.table("facturas_contables").select(
@@ -599,35 +532,25 @@ def recalcular_retefuente_grupo(supabase: Client, proveedor: str, fecha_factura:
 
 
 def generate_sku(supabase: Client, categoria: str) -> str:
-    """Genera un SKU automático basado en la categoría.
-    Formato: CATEGORIA-XXXX (ej: VASO-0001, COPA-0023)
-    """
-    # Limpiar y normalizar la categoría
     import unicodedata
     prefix = categoria.strip().upper() if categoria else "PROD"
-    # Eliminar acentos y caracteres especiales
     prefix = ''.join(
         c for c in unicodedata.normalize('NFD', prefix)
         if unicodedata.category(c) != 'Mn'
     )
-    # Solo letras y números, máx 8 chars
     prefix = ''.join(c for c in prefix if c.isalnum())[:8]
     if not prefix:
         prefix = "PROD"
-    
-    # Contar productos existentes con ese prefijo
     try:
         r = supabase.table("productos").select("sku_interno").like("sku_interno", f"{prefix}-%").execute()
         count = len(r.data) if r.data else 0
     except Exception:
         count = 0
-    
     return f"{prefix}-{str(count + 1).zfill(4)}"
 
 
 @app.post("/save-invoice")
 async def save_invoice_endpoint(data: dict):
-    """Guarda la factura y sus productos en Supabase."""
     try:
         sb = get_supabase()
         invoice = data.get("invoice", {})
@@ -645,15 +568,12 @@ async def save_invoice_endpoint(data: dict):
             proveedor_id = r2.data[0]["id"]
 
         # 1b. Actualizar NIT en proveedores_contables si no lo tiene
-        # Esto permite que la próxima factura lo encuentre por NIT automáticamente
         if nit:
             try:
-                # Buscar por nombre similar
                 rc = sb.rpc("match_proveedor", {"nombre_buscar": nombre}).execute()
                 if rc.data:
                     pc_id = rc.data[0].get("id")
                     pc_nit = rc.data[0].get("nit")
-                    # Solo actualizar si no tiene NIT
                     if pc_id and not pc_nit:
                         sb.table("proveedores_contables").update({"nit": nit}).eq("id", pc_id).execute()
             except Exception:
@@ -682,12 +602,9 @@ async def save_invoice_endpoint(data: dict):
             pc       = int(line.get("paquetes_por_caja") or 1)
             uc       = up * pc
 
-            # Recalcular costos en save-invoice para garantizar correctitud
             precio_fact = float(line.get("precio_unitario_factura") or 0)
             desc_pct_l  = float(line.get("descuento_factura_pct") or 0)
-            # Guardar precio original antes del descuento para poder recalcular desde el panel
-            precio_fact_base = precio_fact
-            # Usar el toggle que envió el frontend (decidido por el usuario en el preview)
+            precio_fact_base = precio_fact  # guardar original antes del descuento
             if line.get("descuento_afecta_costo") and desc_pct_l > 0:
                 precio_fact = money(precio_fact * (1 - desc_pct_l / 100))
             iva_mode_s  = data.get("iva_mode", "NO_INCLUIDO")
@@ -704,7 +621,6 @@ async def save_invoice_endpoint(data: dict):
             cu, cp, cc = calc_costs(costo_final, pres_s, up, pc, precio_es_por_s)
 
             if prod_id:
-                # Producto existente — obtener costo anterior
                 old = sb.table("productos").select("costo_unidad_sin_iva").eq("id", prod_id).single().execute()
                 costo_ant = float(old.data.get("costo_unidad_sin_iva") or 0) if old.data else 0
                 variacion = round(((cu - costo_ant) / costo_ant * 100), 2) if costo_ant > 0 else 0
@@ -727,6 +643,7 @@ async def save_invoice_endpoint(data: dict):
                     "nota_descuento":       line.get("nota_descuento") or "",
                     "precio_factura_base":  precio_fact_base,
                     "precio_es_por":        precio_es_por_s,
+                    "iva_porcentaje":       iva_pct_l,
                 }).eq("id", prod_id).execute()
 
                 estado = "NUEVO" if costo_ant == 0 else ("SUBIO" if cu > costo_ant else "BAJO" if cu < costo_ant else "SIN_CAMBIO")
@@ -734,7 +651,6 @@ async def save_invoice_endpoint(data: dict):
                 costo_ant = 0
                 variacion = 0
                 estado    = "NUEVO"
-                # Generar SKU automático si no tiene uno
                 categoria_line = line.get("categoria", "") or ""
                 sku_int = generate_sku(sb, categoria_line)
                 res = sb.table("productos").insert({
@@ -761,12 +677,13 @@ async def save_invoice_endpoint(data: dict):
                     "ultima_factura":       invoice.get("numero_factura"),
                     "ultima_fecha":         invoice.get("fecha"),
                     "nota_descuento":       line.get("nota_descuento") or "",
-                    "precio_factura_base":   precio_fact_base,
-                    "precio_es_por":         precio_es_por_s,
+                    "precio_factura_base":  precio_fact_base,
+                    "precio_es_por":        precio_es_por_s,
+                    "iva_porcentaje":       iva_pct_l,
                 }).execute()
                 prod_id = res.data[0]["id"]
 
-            # Historial de costos
+            # Historial de costos — incluye precio original y precio_es_por
             sb.table("historial_costos").insert({
                 "factura_id":                   factura_id,
                 "producto_id":                  prod_id,
@@ -779,9 +696,11 @@ async def save_invoice_endpoint(data: dict):
                 "venta_unidad":                 bool(line.get("venta_unidad")),
                 "venta_paquete":                bool(line.get("venta_paquete")),
                 "venta_caja":                   bool(line.get("venta_caja")),
+                "precio_factura_original":      precio_fact_base,
+                "precio_es_por":                precio_es_por_s,
             }).execute()
 
-            # Registrar en historial_descuentos si la línea trae descuento
+            # Historial de descuentos
             desc_pct_hist = float(line.get("descuento_factura_pct") or 0)
             if desc_pct_hist > 0:
                 desc_aplicado = bool(line.get("descuento_afecta_costo", False))
@@ -796,7 +715,6 @@ async def save_invoice_endpoint(data: dict):
                     "nota":          nota_hist,
                     "factura_id":    factura_id,
                 }).execute()
-                # Actualizar columnas de descuento en el producto
                 sb.table("productos").update({
                     "descuento_pct_factura": desc_pct_hist,
                     "descuento_aplicado":    desc_aplicado,
@@ -810,18 +728,13 @@ async def save_invoice_endpoint(data: dict):
         iva_val    = float(invoice.get("iva_factura") or 0)
         valor_desc = round(subtotal * desc_pct / 100, 2)
 
-        # Calcular retefuente:
-        # 1. Si el XML ya trae retefuente → usarla directamente
-        # 2. Si no → calcular con parametros_retefuente según el proveedor
         retefuente = 0.0
         aplica_rete = prov_info.get("aplica_retefuente", "NO")
         retefuente_xml = float(invoice.get("retefuente_xml") or 0)
-        
+
         if retefuente_xml > 0:
-            # El XML ya trae la retefuente calculada
             retefuente = retefuente_xml
         elif aplica_rete == "SI":
-            # Calcular con parámetros vigentes según la fecha de la factura
             try:
                 fecha_factura = invoice.get("fecha") or str(date.today())
                 params = sb.table("parametros_retefuente").select(
@@ -855,8 +768,6 @@ async def save_invoice_endpoint(data: dict):
             "cufe":            invoice.get("cufe", ""),
         }).execute()
 
-        # Recalcular retefuente para el grupo proveedor/fecha
-        # Esto maneja el caso de múltiples facturas del mismo proveedor el mismo día
         if not retefuente_xml:
             recalcular_retefuente_grupo(sb, nombre, invoice.get("fecha", ""), aplica_rete)
 
@@ -866,10 +777,8 @@ async def save_invoice_endpoint(data: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-
 @app.post("/parse-credit-note")
 async def parse_credit_note_endpoint(file: UploadFile = File(...)):
-    """Recibe un ZIP o XML de nota crédito DIAN y devuelve los datos para pre-llenar el formulario."""
     raw = await file.read()
     filename = file.filename or ""
 
@@ -893,8 +802,6 @@ async def parse_credit_note_endpoint(file: UploadFile = File(...)):
         raise HTTPException(status_code=422, detail=f"Error al leer XML: {str(e)}")
 
     try:
-        # Leer datos de la nota crédito
-        # El XML de NC usa CreditNote como raíz pero los campos son similares a Invoice
         supplier = (
             first_text(root_el, ["AccountingSupplierParty","Party","PartyLegalEntity","RegistrationName"]) or
             first_text(root_el, ["AccountingSupplierParty","Party","PartyName","Name"]) or ""
@@ -906,25 +813,21 @@ async def parse_credit_note_endpoint(file: UploadFile = File(...)):
         numero_nota = first_text(root_el, ["ID"]) or ""
         fecha_nota  = first_text(root_el, ["IssueDate"]) or str(date.today())
 
-        # Factura original referenciada
         factura_original = ""
         for ref in all_descendants(root_el, "BillingReference"):
             factura_original = first_text(ref, ["InvoiceDocumentReference","ID"]) or ""
             if factura_original:
                 break
-        # También buscar en DiscrepancyResponse
         if not factura_original:
             for dr in all_descendants(root_el, "DiscrepancyResponse"):
                 factura_original = first_text(dr, ["ReferenceID"]) or ""
                 if factura_original:
                     break
 
-        # Totales
         subtotal = parse_decimal(first_text(root_el, ["LegalMonetaryTotal","LineExtensionAmount"]))
         total    = parse_decimal(first_text(root_el, ["LegalMonetaryTotal","PayableAmount"]))
         iva      = money(total - subtotal) if subtotal and total and total >= subtotal else 0.0
 
-        # Retefuente en NC
         retefuente = 0.0
         for ta in all_descendants(root_el, "TaxTotal"):
             tax_id   = ""
@@ -935,7 +838,6 @@ async def parse_credit_note_endpoint(file: UploadFile = File(...)):
             if tax_id in ("06","05","07") or "RETE" in tax_name:
                 retefuente += parse_decimal(first_text(ta, ["TaxAmount"]))
 
-        # Motivo
         motivo = ""
         for dr in all_descendants(root_el, "DiscrepancyResponse"):
             motivo = first_text(dr, ["Description"]) or ""
@@ -947,7 +849,6 @@ async def parse_credit_note_endpoint(file: UploadFile = File(...)):
                     motivo = note.text.strip()
                     break
 
-        # Buscar factura contable vinculada en Supabase
         factura_contable_id = None
         try:
             sb = get_supabase()
@@ -976,20 +877,14 @@ async def parse_credit_note_endpoint(file: UploadFile = File(...)):
         raise HTTPException(status_code=422, detail=f"Error al parsear nota crédito: {str(e)}")
 
 
-
 @app.post("/toggle-descuento")
 async def toggle_descuento(data: dict):
-    """
-    Aplica o quita el descuento al costo de un producto desde el panel lateral.
-    Recalcula los costos usando el precio_factura_base guardado.
-    """
     try:
         sb = get_supabase()
-        prod_id      = data.get("producto_id")
-        aplicado     = bool(data.get("descuento_aplicado", False))
-        nota         = data.get("nota", "")
+        prod_id  = data.get("producto_id")
+        aplicado = bool(data.get("descuento_aplicado", False))
+        nota     = data.get("nota", "")
 
-        # Obtener datos actuales del producto
         prod = sb.table("productos").select(
             "precio_factura_base,precio_es_por,descuento_pct_factura,"
             "unidades_por_paquete,paquetes_por_caja,presentacion_facturada,iva_porcentaje"
@@ -999,27 +894,24 @@ async def toggle_descuento(data: dict):
             raise HTTPException(status_code=404, detail="Producto no encontrado")
 
         p = prod.data
-        precio_base  = float(p.get("precio_factura_base") or 0)
-        desc_pct     = float(p.get("descuento_pct_factura") or 0)
+        precio_base   = float(p.get("precio_factura_base") or 0)
+        desc_pct      = float(p.get("descuento_pct_factura") or 0)
         precio_es_por = p.get("precio_es_por") or ""
-        pres         = p.get("presentacion_facturada") or "Unidad"
-        up           = int(p.get("unidades_por_paquete") or 1)
-        pc           = int(p.get("paquetes_por_caja") or 1)
-        iva_pct      = float(p.get("iva_porcentaje") or IVA_DEFAULT)
+        pres          = p.get("presentacion_facturada") or "Unidad"
+        up            = int(p.get("unidades_por_paquete") or 1)
+        pc            = int(p.get("paquetes_por_caja") or 1)
+        iva_pct       = float(p.get("iva_porcentaje") or IVA_DEFAULT)
 
         if precio_base <= 0:
             raise HTTPException(status_code=400, detail="Este producto no tiene precio base guardado. Sube la factura nuevamente para activar esta función.")
 
-        # Calcular precio con o sin descuento
         precio_fact = precio_base
         if aplicado and desc_pct > 0:
             precio_fact = money(precio_base * (1 - desc_pct / 100))
 
-        # Recalcular costos (IVA siempre NO_INCLUIDO para productos guardados)
         costo_base = cost_without_tax(precio_fact, "NO_INCLUIDO", iva_pct)
         cu, cp, cc = calc_costs(costo_base, pres, up, pc, precio_es_por)
 
-        # Actualizar producto
         sb.table("productos").update({
             "costo_unidad_sin_iva":  cu,
             "costo_paquete_sin_iva": cp,
@@ -1028,7 +920,6 @@ async def toggle_descuento(data: dict):
             "nota_descuento":        nota,
         }).eq("id", prod_id).execute()
 
-        # Registrar en historial_descuentos
         sb.table("historial_descuentos").insert({
             "producto_id":   prod_id,
             "descuento_pct": desc_pct if aplicado else 0,
@@ -1048,9 +939,78 @@ async def toggle_descuento(data: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/recalc-precio-es-por")
+async def recalc_precio_es_por(data: dict):
+    """
+    Recalcula los costos de un producto desde el precio original de factura
+    usando el nuevo precio_es_por seleccionado en el panel.
+    """
+    try:
+        sb = get_supabase()
+        prod_id       = data.get("producto_id")
+        precio_es_por = data.get("precio_es_por", "")
+        pres          = data.get("presentacion_facturada", "")
+        up            = int(data.get("unidades_por_paquete") or 1)
+        pc            = int(data.get("paquetes_por_caja") or 1)
+
+        prod = sb.table("productos").select(
+            "precio_factura_base,descuento_pct_factura,descuento_aplicado,"
+            "presentacion_facturada,unidades_por_paquete,paquetes_por_caja,iva_porcentaje"
+        ).eq("id", prod_id).single().execute()
+
+        if not prod.data:
+            raise HTTPException(status_code=404, detail="Producto no encontrado")
+
+        p = prod.data
+        precio_base  = float(p.get("precio_factura_base") or 0)
+
+        if precio_base <= 0:
+            raise HTTPException(status_code=400, detail="Este producto no tiene precio base guardado. Sube la factura nuevamente.")
+
+        desc_pct     = float(p.get("descuento_pct_factura") or 0)
+        desc_aplicado = bool(p.get("descuento_aplicado") or False)
+        iva_pct      = float(p.get("iva_porcentaje") or IVA_DEFAULT)
+
+        # Usar presentacion/up/pc del request si vienen, si no los de BD
+        pres_final = pres or p.get("presentacion_facturada") or "Unidad"
+        up_final   = up or int(p.get("unidades_por_paquete") or 1)
+        pc_final   = pc or int(p.get("paquetes_por_caja") or 1)
+
+        # Aplicar descuento si estaba activo
+        precio_fact = precio_base
+        if desc_aplicado and desc_pct > 0:
+            precio_fact = money(precio_base * (1 - desc_pct / 100))
+
+        costo_base = cost_without_tax(precio_fact, "NO_INCLUIDO", iva_pct)
+        cu, cp, cc = calc_costs(costo_base, pres_final, up_final, pc_final, precio_es_por)
+
+        # Guardar en productos
+        sb.table("productos").update({
+            "precio_es_por":         precio_es_por,
+            "presentacion_facturada": pres_final,
+            "unidades_por_paquete":  up_final,
+            "paquetes_por_caja":     pc_final,
+            "unidades_por_caja":     up_final * pc_final,
+            "costo_unidad_sin_iva":  cu,
+            "costo_paquete_sin_iva": cp,
+            "costo_caja_sin_iva":    cc,
+        }).eq("id", prod_id).execute()
+
+        return {
+            "ok": True,
+            "costo_unidad_sin_iva":  cu,
+            "costo_paquete_sin_iva": cp,
+            "costo_caja_sin_iva":    cc,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/extract-text")
 async def extract_text(file: UploadFile = File(...)):
-    """Extrae texto de archivos Excel o Word para procesamiento con Claude."""
     try:
         data = await file.read()
         filename = file.filename or ""
@@ -1085,7 +1045,7 @@ async def extract_text(file: UploadFile = File(...)):
         else:
             texto = data.decode("utf-8", errors="ignore")
 
-        return {"texto": texto[:15000]}  # Limitar a 15k caracteres
+        return {"texto": texto[:15000]}
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1093,7 +1053,6 @@ async def extract_text(file: UploadFile = File(...)):
 
 @app.post("/extract-lista")
 async def extract_lista(file: UploadFile = File(...)):
-    """Extrae productos y precios de una lista de precios usando Google Gemini."""
     import base64, google.generativeai as genai
 
     try:
@@ -1123,11 +1082,9 @@ async def extract_lista(file: UploadFile = File(...)):
             img = PIL.Image.open(io.BytesIO(data))
             response = model.generate_content([prompt, img])
         elif ext == "pdf":
-            # Gemini acepta PDF como bytes
             pdf_part = {"mime_type": "application/pdf", "data": base64.b64encode(data).decode()}
             response = model.generate_content([prompt, pdf_part])
         else:
-            # Excel/Word — extraer texto primero
             texto = ""
             if ext in ("xlsx", "xls"):
                 try:
@@ -1144,7 +1101,7 @@ async def extract_lista(file: UploadFile = File(...)):
                     texto = f"Error: {e}"
             elif ext in ("docx", "doc"):
                 try:
-                    import docx as docxlib
+                    import docxlib
                     doc = docxlib.Document(io.BytesIO(data))
                     lineas = [p.text for p in doc.paragraphs if p.text.strip()]
                     texto = "\n".join(lineas)
