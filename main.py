@@ -11,6 +11,7 @@ from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from supabase import create_client, Client
 from dotenv import load_dotenv
+import resend
 
 load_dotenv()
 
@@ -1148,6 +1149,128 @@ async def extract_lista(file: UploadFile = File(...)):
 
     except json.JSONDecodeError:
         raise HTTPException(status_code=422, detail="No se pudo parsear la respuesta de Gemini")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/config-admin/{clave}")
+async def get_config(clave: str):
+    try:
+        sb  = get_supabase()
+        res = sb.table("config_admin").select("valor").eq("clave", clave).single().execute()
+        return {"valor": res.data.get("valor", "") if res.data else ""}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/config-admin")
+async def set_config(data: dict):
+    try:
+        sb = get_supabase()
+        sb.table("config_admin").upsert({"clave": data["clave"], "valor": data["valor"]}).execute()
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/enviar-reporte-mensual")
+async def enviar_reporte_mensual(data: dict):
+    try:
+        sb  = get_supabase()
+        mes = data.get("mes", "")
+
+        cfg    = sb.table("config_admin").select("valor").eq("clave", "correo_reporte").single().execute()
+        correo = cfg.data.get("valor", "") if cfg.data else ""
+        if not correo:
+            raise HTTPException(status_code=400, detail="No hay correo configurado en Admin")
+
+        total_compras       = float(data.get("total_compras", 0))
+        total_iva_compras   = float(data.get("total_iva_compras", 0))
+        total_rete          = float(data.get("total_rete", 0))
+        total_arriendos     = float(data.get("total_arriendos", 0))
+        ventas              = float(data.get("ventas", 0))
+        iva_ventas          = float(data.get("iva_ventas", 0))
+        iva_arriendos       = float(data.get("iva_arriendos", 0))
+        iva_neto            = float(data.get("iva_neto", 0))
+        facturas_pagadas    = int(data.get("facturas_pagadas", 0))
+        facturas_pendientes = int(data.get("facturas_pendientes", 0))
+        valor_pendiente     = float(data.get("valor_pendiente", 0))
+
+        def fmt(n: float) -> str:
+            return f"${int(round(n)):,}".replace(",", ".")
+
+        color_iva = "#f59e0b" if iva_neto > 0 else "#22c55e"
+
+        html = f"""
+        <div style="font-family:sans-serif;max-width:600px;margin:0 auto;background:#f4f4f5;padding:32px;border-radius:12px;">
+          <div style="background:#C41E2C;padding:20px 24px;border-radius:8px;margin-bottom:24px;">
+            <h1 style="color:white;margin:0;font-size:20px;">Resumen Contable {mes}</h1>
+            <p style="color:rgba(255,255,255,0.7);margin:6px 0 0;font-size:13px;">Punto Rojo</p>
+          </div>
+
+          <div style="background:white;border-radius:8px;padding:20px;margin-bottom:16px;">
+            <p style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:1px;margin:0 0 14px;font-weight:600;">Ventas del mes</p>
+            <table width="100%" cellpadding="6" style="font-size:14px;border-collapse:collapse;">
+              <tr><td style="color:#444;">Total ventas</td><td align="right" style="font-weight:bold;">{fmt(ventas)}</td></tr>
+              <tr><td style="color:#444;">IVA generado (19%)</td><td align="right" style="color:#22c55e;font-weight:bold;">{fmt(iva_ventas)}</td></tr>
+            </table>
+          </div>
+
+          <div style="background:white;border-radius:8px;padding:20px;margin-bottom:16px;">
+            <p style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:1px;margin:0 0 14px;font-weight:600;">Compras del mes</p>
+            <table width="100%" cellpadding="6" style="font-size:14px;border-collapse:collapse;">
+              <tr><td style="color:#444;">Total compras (subtotal)</td><td align="right" style="font-weight:bold;">{fmt(total_compras)}</td></tr>
+              <tr><td style="color:#444;">IVA descontable</td><td align="right" style="color:#ef4444;">{fmt(total_iva_compras)}</td></tr>
+              <tr><td style="color:#444;">Retefuente</td><td align="right" style="color:#ef4444;">{fmt(total_rete)}</td></tr>
+            </table>
+          </div>
+
+          <div style="background:white;border-radius:8px;padding:20px;margin-bottom:16px;">
+            <p style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:1px;margin:0 0 14px;font-weight:600;">Arriendos y otros gastos</p>
+            <table width="100%" cellpadding="6" style="font-size:14px;border-collapse:collapse;">
+              <tr><td style="color:#444;">Total gastos</td><td align="right" style="font-weight:bold;">{fmt(total_arriendos)}</td></tr>
+              <tr><td style="color:#444;">IVA gastos</td><td align="right" style="color:#ef4444;">{fmt(iva_arriendos)}</td></tr>
+            </table>
+          </div>
+
+          <div style="background:white;border-radius:8px;padding:20px;margin-bottom:16px;border-left:4px solid {color_iva};">
+            <p style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:1px;margin:0 0 14px;font-weight:600;">Resumen IVA</p>
+            <table width="100%" cellpadding="6" style="font-size:14px;border-collapse:collapse;">
+              <tr><td style="color:#444;">IVA ventas</td><td align="right">{fmt(iva_ventas)}</td></tr>
+              <tr><td style="color:#444;">IVA compras</td><td align="right">- {fmt(total_iva_compras)}</td></tr>
+              <tr><td style="color:#444;">IVA gastos</td><td align="right">- {fmt(iva_arriendos)}</td></tr>
+              <tr style="border-top:1px solid #eee;">
+                <td style="color:#111;font-weight:bold;padding-top:10px;">IVA neto a pagar</td>
+                <td align="right" style="font-weight:bold;font-size:16px;color:{color_iva};padding-top:10px;">{fmt(iva_neto)}</td>
+              </tr>
+            </table>
+          </div>
+
+          <div style="background:white;border-radius:8px;padding:20px;margin-bottom:24px;">
+            <p style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:1px;margin:0 0 14px;font-weight:600;">Estado de pagos</p>
+            <table width="100%" cellpadding="6" style="font-size:14px;border-collapse:collapse;">
+              <tr><td style="color:#444;">Facturas pagadas</td><td align="right" style="color:#22c55e;font-weight:bold;">{facturas_pagadas}</td></tr>
+              <tr><td style="color:#444;">Facturas pendientes</td><td align="right" style="color:#f59e0b;font-weight:bold;">{facturas_pendientes}</td></tr>
+              <tr><td style="color:#444;">Valor pendiente</td><td align="right" style="color:#ef4444;font-weight:bold;">{fmt(valor_pendiente)}</td></tr>
+            </table>
+          </div>
+
+          <p style="text-align:center;color:#aaa;font-size:11px;margin:0;">Generado desde Costos Punto Rojo</p>
+        </div>
+        """
+
+        resend.api_key = os.getenv("RESEND_API_KEY", "")
+        resend.Emails.send({
+            "from":    "Punto Rojo <onboarding@resend.dev>",
+            "to":      [correo],
+            "subject": f"Resumen Contable {mes} - Punto Rojo",
+            "html":    html,
+        })
+
+        return {"ok": True, "correo": correo}
+
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
