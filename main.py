@@ -291,6 +291,32 @@ def calc_costs(costo_fact: float, pres: str, up: int, pc: int, precio_es_por: st
 
     return cu, cp, cc
 
+def inferir_precio_es_por(precio: float, up: int, pc: int, uc: int) -> str:
+    """Infiere si el precio facturado es por unidad, paquete o caja
+    usando lógica matemática: el costo unitario resultante debe ser razonable (>= 0.5 COP).
+    
+    Regla principal: si precio / up >= 0.5 y up > 1 → precio es por paquete.
+    Si precio / uc >= 0.5 pero precio / up < 0.5 → precio es por caja.
+    """
+    MIN_CU = 0.5
+    up = max(up, 1); uc = max(uc, 1)
+
+    cu_paquete = precio / up if up > 1 else None
+    cu_caja    = precio / uc if uc > up else None
+
+    # Si precio/up da costo razonable y up > 1 → precio es por paquete
+    if cu_paquete and cu_paquete >= MIN_CU:
+        if cu_caja is None or cu_caja < MIN_CU:
+            return "Paquete"
+        if up > 1:
+            return "Paquete"
+
+    # Si precio/uc razonable y precio/up muy alto o no razonable → precio es por caja
+    if cu_caja and cu_caja >= MIN_CU and (cu_paquete is None or cu_paquete > 10000):
+        return "Caja"
+
+    return "Unidad"
+
 def sale_price(costo: float, markup: float, transporte: float = 0.0) -> float:
     costo_total = (costo + transporte) * (1 + IVA_DEFAULT / 100)
     m = max(0.0, min(float(markup or 0) / 100.0, 0.95))
@@ -312,18 +338,19 @@ def add_calcs(lines: list, iva_mode: str) -> list:
         if l.get("descuento_afecta_costo") and desc_pct > 0:
             precio_fact = money(precio_fact * (1 - desc_pct / 100))
 
-        costo_base  = cost_without_tax(precio_fact, iva_mode, l.get("iva_porcentaje", IVA_DEFAULT))
-        transporte  = float(l.get("transporte_adicional", 0) or 0)
+        costo_base       = cost_without_tax(precio_fact, iva_mode, l.get("iva_porcentaje", IVA_DEFAULT))
+        transporte       = float(l.get("transporte_adicional", 0) or 0)
         costo_fact_final = costo_base + transporte
 
+        # Usar precio_es_por del usuario si viene, si no inferir automáticamente
         precio_es_por = l.get("precio_es_por") or ""
         if not precio_es_por:
-            qty = float(l.get("cantidad_facturada") or 1)
-            if qty == 1 and pc > 1:
-                precio_es_por = "Caja"
+            precio_es_por = inferir_precio_es_por(costo_fact_final, up, pc, uc)
+
         cu, cp, cc = calc_costs(costo_fact_final, pres, up, pc, precio_es_por)
 
         row = {**l,
+            "precio_es_por": precio_es_por,
             "unidades_por_caja": uc,
             "costo_unidad_sin_iva": cu,
             "costo_paquete_sin_iva": cp,
@@ -456,23 +483,23 @@ async def parse_invoice_endpoint(
 
             if match_info["match"] == "Exacto" and match_info["producto"]:
                 p = match_info["producto"]
-                line["producto_id"]          = p.get("id")
-                line["nombre_punto_rojo"]    = p.get("nombre_punto_rojo") or line["nombre_factura"]
-                line["categoria"]            = p.get("categoria") or ""
+                line["producto_id"]            = p.get("id")
+                line["nombre_punto_rojo"]      = p.get("nombre_punto_rojo") or line["nombre_factura"]
+                line["categoria"]              = p.get("categoria") or ""
                 line["presentacion_facturada"] = p.get("presentacion_facturada") or line["presentacion_facturada"]
-                line["precio_es_por"]        = p.get("precio_es_por") or ""
-                line["unidades_por_paquete"] = p.get("unidades_por_paquete") or line["unidades_por_paquete"]
-                line["paquetes_por_caja"]    = p.get("paquetes_por_caja") or line["paquetes_por_caja"]
+                line["precio_es_por"]          = p.get("precio_es_por") or ""
+                line["unidades_por_paquete"]   = p.get("unidades_por_paquete") or line["unidades_por_paquete"]
+                line["paquetes_por_caja"]      = p.get("paquetes_por_caja") or line["paquetes_por_caja"]
                 up_match = p.get("unidades_por_paquete") or line["unidades_por_paquete"]
                 pc_match = p.get("paquetes_por_caja") or line["paquetes_por_caja"]
-                line["unidades_por_caja"]    = up_match * pc_match
-                line["markup_unidad_pct"]    = p.get("markup_unidad_pct") or line["markup_unidad_pct"]
-                line["markup_paquete_pct"]   = p.get("markup_paquete_pct") or line["markup_paquete_pct"]
-                line["markup_caja_pct"]      = p.get("markup_caja_pct") or line["markup_caja_pct"]
-                line["venta_unidad"]         = p.get("venta_unidad") if p.get("venta_unidad") is not None else line["venta_unidad"]
-                line["venta_paquete"]        = p.get("venta_paquete") if p.get("venta_paquete") is not None else line["venta_paquete"]
-                line["venta_caja"]           = p.get("venta_caja") if p.get("venta_caja") is not None else line["venta_caja"]
-                line["costo_anterior"]       = float(p.get("costo_unidad_sin_iva") or 0)
+                line["unidades_por_caja"]      = up_match * pc_match
+                line["markup_unidad_pct"]      = p.get("markup_unidad_pct") or line["markup_unidad_pct"]
+                line["markup_paquete_pct"]     = p.get("markup_paquete_pct") or line["markup_paquete_pct"]
+                line["markup_caja_pct"]        = p.get("markup_caja_pct") or line["markup_caja_pct"]
+                line["venta_unidad"]           = p.get("venta_unidad") if p.get("venta_unidad") is not None else line["venta_unidad"]
+                line["venta_paquete"]          = p.get("venta_paquete") if p.get("venta_paquete") is not None else line["venta_paquete"]
+                line["venta_caja"]             = p.get("venta_caja") if p.get("venta_caja") is not None else line["venta_caja"]
+                line["costo_anterior"]         = float(p.get("costo_unidad_sin_iva") or 0)
 
     except Exception as e:
         invoice["supabase_match_error"] = str(e)
@@ -553,8 +580,8 @@ def generate_sku(supabase: Client, categoria: str) -> str:
 async def save_invoice_endpoint(data: dict):
     try:
         sb = get_supabase()
-        invoice = data.get("invoice", {})
-        lineas  = data.get("lineas", [])
+        invoice  = data.get("invoice", {})
+        lineas   = data.get("lineas", [])
         iva_mode = data.get("iva_mode", "NO_INCLUIDO")
 
         # 1. Buscar o crear proveedor
@@ -581,43 +608,44 @@ async def save_invoice_endpoint(data: dict):
 
         # 2. Insertar factura
         fac = sb.table("facturas").insert({
-            "proveedor_id":    proveedor_id,
-            "proveedor_nit":   nit,
-            "numero_factura":  invoice.get("numero_factura"),
-            "fecha":           invoice.get("fecha"),
-            "subtotal":        invoice.get("subtotal_factura"),
-            "iva":             invoice.get("iva_factura"),
-            "total":           invoice.get("total_factura"),
-            "iva_modo":        iva_mode,
-            "cufe":            invoice.get("cufe"),
-            "archivo":         invoice.get("archivo_nombre", ""),
+            "proveedor_id":   proveedor_id,
+            "proveedor_nit":  nit,
+            "numero_factura": invoice.get("numero_factura"),
+            "fecha":          invoice.get("fecha"),
+            "subtotal":       invoice.get("subtotal_factura"),
+            "iva":            invoice.get("iva_factura"),
+            "total":          invoice.get("total_factura"),
+            "iva_modo":       iva_mode,
+            "cufe":           invoice.get("cufe"),
+            "archivo":        invoice.get("archivo_nombre", ""),
         }).execute()
         factura_id = fac.data[0]["id"]
 
         # 3. Insertar/actualizar productos e historial
         for line in lineas:
-            sku_int  = line.get("sku_interno") or line.get("sku_proveedor", "")
-            prod_id  = line.get("producto_id")
-            up       = int(line.get("unidades_por_paquete") or 1)
-            pc       = int(line.get("paquetes_por_caja") or 1)
-            uc       = up * pc
+            prod_id = line.get("producto_id")
+            up      = int(line.get("unidades_por_paquete") or 1)
+            pc      = int(line.get("paquetes_por_caja") or 1)
+            uc      = up * pc
 
-            precio_fact = float(line.get("precio_unitario_factura") or 0)
-            desc_pct_l  = float(line.get("descuento_factura_pct") or 0)
+            precio_fact      = float(line.get("precio_unitario_factura") or 0)
+            desc_pct_l       = float(line.get("descuento_factura_pct") or 0)
             precio_fact_base = precio_fact  # guardar original antes del descuento
             if line.get("descuento_afecta_costo") and desc_pct_l > 0:
                 precio_fact = money(precio_fact * (1 - desc_pct_l / 100))
+
             iva_mode_s  = data.get("iva_mode", "NO_INCLUIDO")
             iva_pct_l   = float(line.get("iva_porcentaje") or IVA_DEFAULT)
             costo_base  = cost_without_tax(precio_fact, iva_mode_s, iva_pct_l)
             transporte  = float(line.get("transporte_adicional") or 0)
             costo_final = costo_base + transporte
             pres_s      = line.get("presentacion_facturada", "Unidad")
+
+            # Usar precio_es_por del usuario si viene, si no inferir
             precio_es_por_s = line.get("precio_es_por") or ""
             if not precio_es_por_s:
-                qty_s = float(line.get("cantidad_facturada") or 1)
-                if qty_s == 1 and pc > 1:
-                    precio_es_por_s = "Caja"
+                precio_es_por_s = inferir_precio_es_por(costo_final, up, pc, uc)
+
             cu, cp, cc = calc_costs(costo_final, pres_s, up, pc, precio_es_por_s)
 
             if prod_id:
@@ -626,24 +654,24 @@ async def save_invoice_endpoint(data: dict):
                 variacion = round(((cu - costo_ant) / costo_ant * 100), 2) if costo_ant > 0 else 0
 
                 sb.table("productos").update({
-                    "costo_unidad_sin_iva":  cu,
-                    "costo_paquete_sin_iva": cp,
-                    "costo_caja_sin_iva":    cc,
-                    "unidades_por_paquete": up,
-                    "paquetes_por_caja":    pc,
-                    "unidades_por_caja":    uc,
-                    "ultima_factura":       invoice.get("numero_factura"),
-                    "ultima_fecha":         invoice.get("fecha"),
-                    "markup_unidad_pct":    float(line.get("markup_unidad_pct") or 40),
-                    "markup_paquete_pct":   float(line.get("markup_paquete_pct") or 35),
-                    "markup_caja_pct":      float(line.get("markup_caja_pct") or 30),
-                    "venta_unidad":         bool(line.get("venta_unidad")),
-                    "venta_paquete":        bool(line.get("venta_paquete")),
-                    "venta_caja":           bool(line.get("venta_caja")),
-                    "nota_descuento":       line.get("nota_descuento") or "",
-                    "precio_factura_base":  precio_fact_base,
-                    "precio_es_por":        precio_es_por_s,
-                    "iva_porcentaje":       iva_pct_l,
+                    "costo_unidad_sin_iva":   cu,
+                    "costo_paquete_sin_iva":  cp,
+                    "costo_caja_sin_iva":     cc,
+                    "unidades_por_paquete":   up,
+                    "paquetes_por_caja":      pc,
+                    "unidades_por_caja":      uc,
+                    "ultima_factura":         invoice.get("numero_factura"),
+                    "ultima_fecha":           invoice.get("fecha"),
+                    "markup_unidad_pct":      float(line.get("markup_unidad_pct") or 40),
+                    "markup_paquete_pct":     float(line.get("markup_paquete_pct") or 35),
+                    "markup_caja_pct":        float(line.get("markup_caja_pct") or 30),
+                    "venta_unidad":           bool(line.get("venta_unidad")),
+                    "venta_paquete":          bool(line.get("venta_paquete")),
+                    "venta_caja":             bool(line.get("venta_caja")),
+                    "nota_descuento":         line.get("nota_descuento") or "",
+                    "precio_factura_base":    precio_fact_base,
+                    "precio_es_por":          precio_es_por_s,
+                    "iva_porcentaje":         iva_pct_l,
                 }).eq("id", prod_id).execute()
 
                 estado = "NUEVO" if costo_ant == 0 else ("SUBIO" if cu > costo_ant else "BAJO" if cu < costo_ant else "SIN_CAMBIO")
@@ -654,36 +682,36 @@ async def save_invoice_endpoint(data: dict):
                 categoria_line = line.get("categoria", "") or ""
                 sku_int = generate_sku(sb, categoria_line)
                 res = sb.table("productos").insert({
-                    "proveedor_id":         proveedor_id,
-                    "sku_proveedor":        line.get("sku_proveedor", ""),
-                    "sku_interno":          sku_int,
-                    "nombre_factura":       line.get("nombre_factura", ""),
-                    "nombre_punto_rojo":    line.get("nombre_punto_rojo") or line.get("nombre_factura", ""),
-                    "categoria":            line.get("categoria", ""),
+                    "proveedor_id":           proveedor_id,
+                    "sku_proveedor":          line.get("sku_proveedor", ""),
+                    "sku_interno":            sku_int,
+                    "nombre_factura":         line.get("nombre_factura", ""),
+                    "nombre_punto_rojo":      line.get("nombre_punto_rojo") or line.get("nombre_factura", ""),
+                    "categoria":              line.get("categoria", ""),
                     "presentacion_facturada": line.get("presentacion_facturada", "Unidad"),
-                    "unidades_por_paquete": up,
-                    "paquetes_por_caja":    pc,
-                    "unidades_por_caja":    uc,
-                    "costo_unidad_sin_iva":  cu,
-                    "costo_paquete_sin_iva": cp,
-                    "costo_caja_sin_iva":    cc,
-                    "markup_unidad_pct":    float(line.get("markup_unidad_pct") or 40),
-                    "markup_paquete_pct":   float(line.get("markup_paquete_pct") or 35),
-                    "markup_caja_pct":      float(line.get("markup_caja_pct") or 30),
-                    "venta_unidad":         bool(line.get("venta_unidad")),
-                    "venta_paquete":        bool(line.get("venta_paquete")),
-                    "venta_caja":           bool(line.get("venta_caja")),
-                    "activo":               True,
-                    "ultima_factura":       invoice.get("numero_factura"),
-                    "ultima_fecha":         invoice.get("fecha"),
-                    "nota_descuento":       line.get("nota_descuento") or "",
-                    "precio_factura_base":  precio_fact_base,
-                    "precio_es_por":        precio_es_por_s,
-                    "iva_porcentaje":       iva_pct_l,
+                    "unidades_por_paquete":   up,
+                    "paquetes_por_caja":      pc,
+                    "unidades_por_caja":      uc,
+                    "costo_unidad_sin_iva":   cu,
+                    "costo_paquete_sin_iva":  cp,
+                    "costo_caja_sin_iva":     cc,
+                    "markup_unidad_pct":      float(line.get("markup_unidad_pct") or 40),
+                    "markup_paquete_pct":     float(line.get("markup_paquete_pct") or 35),
+                    "markup_caja_pct":        float(line.get("markup_caja_pct") or 30),
+                    "venta_unidad":           bool(line.get("venta_unidad")),
+                    "venta_paquete":          bool(line.get("venta_paquete")),
+                    "venta_caja":             bool(line.get("venta_caja")),
+                    "activo":                 True,
+                    "ultima_factura":         invoice.get("numero_factura"),
+                    "ultima_fecha":           invoice.get("fecha"),
+                    "nota_descuento":         line.get("nota_descuento") or "",
+                    "precio_factura_base":    precio_fact_base,
+                    "precio_es_por":          precio_es_por_s,
+                    "iva_porcentaje":         iva_pct_l,
                 }).execute()
                 prod_id = res.data[0]["id"]
 
-            # Historial de costos — incluye precio original y precio_es_por
+            # Historial de costos
             sb.table("historial_costos").insert({
                 "factura_id":                   factura_id,
                 "producto_id":                  prod_id,
@@ -721,15 +749,15 @@ async def save_invoice_endpoint(data: dict):
                 }).eq("id", prod_id).execute()
 
         # 4. Factura contable
-        prov_info = data.get("proveedor_info", {})
+        prov_info  = data.get("proveedor_info", {})
         forma_pago = prov_info.get("forma_pago", "CREDITO")
         desc_pct   = float(prov_info.get("descuento_pct") or 0)
         subtotal   = float(invoice.get("subtotal_factura") or 0)
         iva_val    = float(invoice.get("iva_factura") or 0)
         valor_desc = round(subtotal * desc_pct / 100, 2)
 
-        retefuente = 0.0
-        aplica_rete = prov_info.get("aplica_retefuente", "NO")
+        retefuente     = 0.0
+        aplica_rete    = prov_info.get("aplica_retefuente", "NO")
         retefuente_xml = float(invoice.get("retefuente_xml") or 0)
 
         if retefuente_xml > 0:
@@ -751,21 +779,21 @@ async def save_invoice_endpoint(data: dict):
         valor_pagar = subtotal + iva_val - valor_desc - retefuente
 
         sb.table("facturas_contables").insert({
-            "factura_id":      factura_id,
-            "proveedor":       nombre,
-            "numero_factura":  invoice.get("numero_factura"),
-            "fecha_factura":   invoice.get("fecha"),
-            "fecha_revision":  str(date.today()),
-            "forma_pago":      forma_pago,
-            "subtotal":        subtotal,
-            "descuento_pct":   desc_pct,
-            "valor_descuento": valor_desc,
+            "factura_id":        factura_id,
+            "proveedor":         nombre,
+            "numero_factura":    invoice.get("numero_factura"),
+            "fecha_factura":     invoice.get("fecha"),
+            "fecha_revision":    str(date.today()),
+            "forma_pago":        forma_pago,
+            "subtotal":          subtotal,
+            "descuento_pct":     desc_pct,
+            "valor_descuento":   valor_desc,
             "aplica_retefuente": aplica_rete,
-            "retefuente":      retefuente,
-            "iva":             iva_val,
-            "valor_a_pagar":   valor_pagar,
+            "retefuente":        retefuente,
+            "iva":               iva_val,
+            "valor_a_pagar":     valor_pagar,
             "precios_revisados": "NO",
-            "cufe":            invoice.get("cufe", ""),
+            "cufe":              invoice.get("cufe", ""),
         }).execute()
 
         if not retefuente_xml:
@@ -860,17 +888,17 @@ async def parse_credit_note_endpoint(file: UploadFile = File(...)):
             pass
 
         return {
-            "proveedor":            supplier,
-            "proveedor_nit":        nit,
-            "numero_nota":          numero_nota,
-            "fecha_nota":           fecha_nota,
-            "factura_original":     factura_original,
-            "factura_contable_id":  factura_contable_id,
-            "subtotal":             money(subtotal),
-            "iva":                  money(iva),
-            "retefuente":           money(retefuente),
-            "total":                money(total),
-            "motivo":               motivo,
+            "proveedor":           supplier,
+            "proveedor_nit":       nit,
+            "numero_nota":         numero_nota,
+            "fecha_nota":          fecha_nota,
+            "factura_original":    factura_original,
+            "factura_contable_id": factura_contable_id,
+            "subtotal":            money(subtotal),
+            "iva":                 money(iva),
+            "retefuente":          money(retefuente),
+            "total":               money(total),
+            "motivo":              motivo,
         }
 
     except Exception as e:
@@ -880,7 +908,7 @@ async def parse_credit_note_endpoint(file: UploadFile = File(...)):
 @app.post("/toggle-descuento")
 async def toggle_descuento(data: dict):
     try:
-        sb = get_supabase()
+        sb       = get_supabase()
         prod_id  = data.get("producto_id")
         aplicado = bool(data.get("descuento_aplicado", False))
         nota     = data.get("nota", "")
@@ -893,7 +921,7 @@ async def toggle_descuento(data: dict):
         if not prod.data:
             raise HTTPException(status_code=404, detail="Producto no encontrado")
 
-        p = prod.data
+        p             = prod.data
         precio_base   = float(p.get("precio_factura_base") or 0)
         desc_pct      = float(p.get("descuento_pct_factura") or 0)
         precio_es_por = p.get("precio_es_por") or ""
@@ -941,12 +969,9 @@ async def toggle_descuento(data: dict):
 
 @app.post("/recalc-precio-es-por")
 async def recalc_precio_es_por(data: dict):
-    """
-    Recalcula los costos de un producto desde el precio original de factura
-    usando el nuevo precio_es_por seleccionado en el panel.
-    """
+    """Recalcula los costos desde el precio original de factura usando el nuevo precio_es_por."""
     try:
-        sb = get_supabase()
+        sb            = get_supabase()
         prod_id       = data.get("producto_id")
         precio_es_por = data.get("precio_es_por", "")
         pres          = data.get("presentacion_facturada", "")
@@ -961,39 +986,42 @@ async def recalc_precio_es_por(data: dict):
         if not prod.data:
             raise HTTPException(status_code=404, detail="Producto no encontrado")
 
-        p = prod.data
+        p            = prod.data
         precio_base  = float(p.get("precio_factura_base") or 0)
 
         if precio_base <= 0:
             raise HTTPException(status_code=400, detail="Este producto no tiene precio base guardado. Sube la factura nuevamente.")
 
-        desc_pct     = float(p.get("descuento_pct_factura") or 0)
+        desc_pct      = float(p.get("descuento_pct_factura") or 0)
         desc_aplicado = bool(p.get("descuento_aplicado") or False)
-        iva_pct      = float(p.get("iva_porcentaje") or IVA_DEFAULT)
+        iva_pct       = float(p.get("iva_porcentaje") or IVA_DEFAULT)
 
-        # Usar presentacion/up/pc del request si vienen, si no los de BD
         pres_final = pres or p.get("presentacion_facturada") or "Unidad"
         up_final   = up or int(p.get("unidades_por_paquete") or 1)
         pc_final   = pc or int(p.get("paquetes_por_caja") or 1)
+        uc_final   = up_final * pc_final
 
-        # Aplicar descuento si estaba activo
         precio_fact = precio_base
         if desc_aplicado and desc_pct > 0:
             precio_fact = money(precio_base * (1 - desc_pct / 100))
 
-        costo_base = cost_without_tax(precio_fact, "NO_INCLUIDO", iva_pct)
-        cu, cp, cc = calc_costs(costo_base, pres_final, up_final, pc_final, precio_es_por)
+        costo_base_val = cost_without_tax(precio_fact, "NO_INCLUIDO", iva_pct)
 
-        # Guardar en productos
+        # Si no viene precio_es_por, inferir automáticamente
+        if not precio_es_por:
+            precio_es_por = inferir_precio_es_por(costo_base_val, up_final, pc_final, uc_final)
+
+        cu, cp, cc = calc_costs(costo_base_val, pres_final, up_final, pc_final, precio_es_por)
+
         sb.table("productos").update({
-            "precio_es_por":         precio_es_por,
+            "precio_es_por":          precio_es_por,
             "presentacion_facturada": pres_final,
-            "unidades_por_paquete":  up_final,
-            "paquetes_por_caja":     pc_final,
-            "unidades_por_caja":     up_final * pc_final,
-            "costo_unidad_sin_iva":  cu,
-            "costo_paquete_sin_iva": cp,
-            "costo_caja_sin_iva":    cc,
+            "unidades_por_paquete":   up_final,
+            "paquetes_por_caja":      pc_final,
+            "unidades_por_caja":      uc_final,
+            "costo_unidad_sin_iva":   cu,
+            "costo_paquete_sin_iva":  cp,
+            "costo_caja_sin_iva":     cc,
         }).eq("id", prod_id).execute()
 
         return {
@@ -1012,10 +1040,10 @@ async def recalc_precio_es_por(data: dict):
 @app.post("/extract-text")
 async def extract_text(file: UploadFile = File(...)):
     try:
-        data = await file.read()
+        data     = await file.read()
         filename = file.filename or ""
-        ext = filename.rsplit(".", 1)[-1].lower()
-        texto = ""
+        ext      = filename.rsplit(".", 1)[-1].lower()
+        texto    = ""
 
         if ext in ("xlsx", "xls"):
             try:
@@ -1063,9 +1091,9 @@ async def extract_lista(file: UploadFile = File(...)):
         genai.configure(api_key=GOOGLE_API_KEY)
         model = genai.GenerativeModel("gemini-1.5-flash")
 
-        data = await file.read()
+        data     = await file.read()
         filename = file.filename or ""
-        ext = filename.rsplit(".", 1)[-1].lower()
+        ext      = filename.rsplit(".", 1)[-1].lower()
 
         prompt = (
             "Eres un asistente que extrae listas de precios de proveedores. "
@@ -1112,9 +1140,9 @@ async def extract_lista(file: UploadFile = File(...)):
             response = model.generate_content(prompt + "\n\nContenido:\n" + texto[:10000])
 
         texto_resp = response.text or ""
-        clean = texto_resp.replace("```json", "").replace("```", "").strip()
-        parsed = json.loads(clean)
-        productos = parsed.get("productos", [])
+        clean      = texto_resp.replace("```json", "").replace("```", "").strip()
+        parsed     = json.loads(clean)
+        productos  = parsed.get("productos", [])
 
         return {"productos": productos, "total": len(productos)}
 
