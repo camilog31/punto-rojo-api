@@ -8,6 +8,7 @@ from datetime import datetime, date
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional
 from fastapi import FastAPI, UploadFile, File, HTTPException
+from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from supabase import create_client, Client
 from dotenv import load_dotenv
@@ -1271,6 +1272,37 @@ async def enviar_reporte_mensual(data: dict):
 
     except HTTPException:
         raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─── Limpiar tablas ──────────────────────────────────────────────────────────
+
+TABLAS_PERMITIDAS = [
+    "historial_descuentos",
+    "historial_costos",
+    "facturas_revisadas",
+    "reportes_revisados",
+    "listas_precios_items",
+    "listas_precios",
+    "productos",
+    "facturas_contables",
+    "facturas",
+]
+
+class LimpiarRequest(BaseModel):
+    tablas: list[str]
+
+@app.delete("/limpiar-tablas")
+async def limpiar_tablas(req: LimpiarRequest):
+    for tabla in req.tablas:
+        if tabla not in TABLAS_PERMITIDAS:
+            raise HTTPException(status_code=400, detail=f"Tabla no permitida: {tabla}")
+    try:
+        sb = get_supabase()
+        for tabla in req.tablas:
+            sb.table(tabla).delete().neq("id", 0).execute()
+        return {"ok": True, "tablas_borradas": req.tablas}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
