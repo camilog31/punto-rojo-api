@@ -682,7 +682,7 @@ async def save_invoice_endpoint(data: dict):
                 estado    = "NUEVO"
                 categoria_line = line.get("categoria", "") or ""
                 sku_int = generate_sku(sb, categoria_line)
-                res = sb.table("productos").insert({
+                res = sb.table("productos").upsert({
                     "proveedor_id":           proveedor_id,
                     "sku_proveedor":          line.get("sku_proveedor", ""),
                     "sku_interno":            sku_int,
@@ -709,7 +709,7 @@ async def save_invoice_endpoint(data: dict):
                     "precio_factura_base":    precio_fact_base,
                     "precio_es_por":          precio_es_por_s,
                     "iva_porcentaje":         iva_pct_l,
-                }).execute()
+                }, on_conflict="proveedor_id,sku_proveedor,nombre_factura").execute()
                 prod_id = res.data[0]["id"]
 
             # Historial de costos
