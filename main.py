@@ -1365,7 +1365,7 @@ async def enviar_reporte_costos(data: dict):
                 "nombre":      p.get("nombre_punto_rojo") or "—",
                 "sku":         p.get("sku_interno") or "—",
                 "categoria":   p.get("categoria") or "—",
-                "proveedor":   p.get("proveedor_nombre") or f.get("proveedor") or "—",
+                "proveedor":   p.get("proveedor_nombre") or "—",
                 "factura":     f.get("numero_factura") or "—",
                 "costo_ant":   h.get("costo_unidad_anterior") or 0,
                 "costo_nuevo": cu,
