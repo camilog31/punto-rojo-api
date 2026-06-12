@@ -1338,7 +1338,7 @@ async def enviar_reporte_costos(data: dict):
         prod_ids = list({h["producto_id"] for h in hist})
         fact_ids = list({h["factura_id"] for h in hist if h.get("factura_id")})
 
-        prods_res = sb.table("productos").select(
+        prods_res = sb.table("productos_con_proveedor").select(
             "id,nombre_punto_rojo,sku_interno,categoria,unidades_por_paquete,paquetes_por_caja,unidades_por_caja,"
             "markup_unidad_pct,markup_paquete_pct,markup_caja_pct,"
             "costo_paquete_sin_iva,costo_caja_sin_iva,venta_unidad,venta_paquete,venta_caja,proveedor_nombre"
