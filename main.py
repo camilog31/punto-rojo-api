@@ -1236,6 +1236,7 @@ async def enviar_reporte_mensual(data: dict):
         total_compras       = float(data.get("total_compras", 0))
         total_iva_compras   = float(data.get("total_iva_compras", 0))
         total_rete          = float(data.get("total_rete", 0))
+        total_descuentos    = float(data.get("total_descuentos", 0))
         total_arriendos     = float(data.get("total_arriendos", 0))
         ventas              = float(data.get("ventas", 0))
         iva_ventas          = float(data.get("iva_ventas", 0))
@@ -1271,6 +1272,7 @@ async def enviar_reporte_mensual(data: dict):
               <tr><td style="color:#444;">Total compras (subtotal)</td><td align="right" style="font-weight:bold;">{fmt(total_compras)}</td></tr>
               <tr><td style="color:#444;">IVA descontable</td><td align="right" style="color:#ef4444;">{fmt(total_iva_compras)}</td></tr>
               <tr><td style="color:#444;">Retefuente</td><td align="right" style="color:#ef4444;">{fmt(total_rete)}</td></tr>
+              {f'<tr><td style="color:#444;">Descuentos proveedores</td><td align="right" style="color:#22c55e;">- {fmt(total_descuentos)}</td></tr>' if total_descuentos > 0 else ''}
             </table>
           </div>
 
