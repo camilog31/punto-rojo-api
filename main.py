@@ -1628,9 +1628,19 @@ async def sincronizar_forma_pago(data: dict):
         if not proveedor_nombre or not forma_pago:
             raise HTTPException(status_code=400, detail="Se requiere proveedor_nombre y forma_pago")
 
+        # Buscar por nombre exacto primero, luego por similitud
         result = sb.table("facturas_contables").update({
             "forma_pago": forma_pago
-        }).ilike("proveedor", f"%{proveedor_nombre}%").execute()
+        }).ilike("proveedor", proveedor_nombre).execute()
+        
+        # Si no actualizó nada, intentar con búsqueda parcial
+        if not result.data:
+            # Usar las primeras 3 palabras del nombre para buscar
+            palabras = proveedor_nombre.strip().split()[:3]
+            busqueda = " ".join(palabras)
+            sb.table("facturas_contables").update({
+                "forma_pago": forma_pago
+            }).ilike("proveedor", f"%{busqueda}%").execute()
 
         return {"ok": True, "forma_pago": forma_pago, "proveedor": proveedor_nombre}
     except HTTPException:
