@@ -248,8 +248,17 @@ def parse_invoice(root: ET.Element) -> dict:
 
     # Forma de pago desde XML
     payment_code = first_text(root, ["PaymentMeans", "PaymentMeansCode"]) or ""
-    CONTADO_CODES = {"10", "48", "49", "1"}
-    forma_pago_xml = "CONTADO" if payment_code.strip() in CONTADO_CODES else ("CREDITO" if payment_code.strip() else "")
+    due_date = first_text(root, ["PaymentMeans", "PaymentDueDate"]) or ""
+    issue_date = first_text(root, ["IssueDate"]) or ""
+    CONTADO_CODES = {"10", "48", "49"}
+    if payment_code.strip() in CONTADO_CODES:
+        forma_pago_xml = "CONTADO"
+    elif due_date and issue_date and due_date > issue_date:
+        forma_pago_xml = "CREDITO"
+    elif payment_code.strip() == "1" and (not due_date or due_date == issue_date):
+        forma_pago_xml = "CONTADO"
+    else:
+        forma_pago_xml = "CREDITO" if payment_code.strip() else ""
 
     return {
         "proveedor": supplier,
