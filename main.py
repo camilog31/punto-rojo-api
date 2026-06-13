@@ -1506,6 +1506,19 @@ async def enviar_reporte_costos(data: dict):
             for e, c, l in [("NUEVO", len(nuevos), "Nuevos"), ("SUBIO", len(subieron), "Subieron"), ("BAJO", len(bajaron), "Bajaron")])}
         </div>"""
 
+        # Obtener nota del reporte si existe
+        nota_html = ""
+        try:
+            rev = sb.table("reportes_revisados").select("notas,revisado_por").eq("fecha", fecha).single().execute()
+            if rev.data and rev.data.get("notas"):
+                nota_html = f"""
+                <div style="background:white;border-radius:8px;padding:16px;margin-bottom:20px;border-left:3px solid #C41E2C;">
+                  <p style="font-size:11px;color:#888;font-weight:600;text-transform:uppercase;margin:0 0 6px;">Notas del reporte</p>
+                  <p style="font-size:13px;color:#333;margin:0;">{rev.data["notas"]}</p>
+                </div>"""
+        except Exception:
+            pass
+
         html = f"""
         <div style="font-family:sans-serif;max-width:680px;margin:0 auto;background:#f4f4f5;padding:32px;border-radius:12px;">
           <div style="background:#C41E2C;padding:20px 24px;border-radius:8px;margin-bottom:24px;">
@@ -1513,6 +1526,7 @@ async def enviar_reporte_costos(data: dict):
             <p style="color:rgba(255,255,255,0.75);margin:6px 0 0;font-size:13px;">{fecha_bonita(fecha)} · Punto Rojo</p>
           </div>
           {resumen_html}
+          {nota_html}
           {render_grupo("🆕 Productos nuevos",   "#C41E2C", nuevos)}
           {render_grupo("📈 Subieron de precio", "#ef4444", subieron)}
           {render_grupo("📉 Bajaron de precio",  "#22c55e", bajaron)}
