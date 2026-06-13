@@ -1617,6 +1617,28 @@ async def eliminar_factura(factura_id: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ─── Sincronizar forma de pago proveedor → facturas ──────────────────────────
+
+@app.post("/sincronizar-forma-pago")
+async def sincronizar_forma_pago(data: dict):
+    try:
+        sb = get_supabase()
+        proveedor_nombre = data.get("proveedor_nombre", "")
+        forma_pago = data.get("forma_pago", "")
+        if not proveedor_nombre or not forma_pago:
+            raise HTTPException(status_code=400, detail="Se requiere proveedor_nombre y forma_pago")
+
+        result = sb.table("facturas_contables").update({
+            "forma_pago": forma_pago
+        }).ilike("proveedor", f"%{proveedor_nombre}%").execute()
+
+        return {"ok": True, "forma_pago": forma_pago, "proveedor": proveedor_nombre}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
