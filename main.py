@@ -1366,7 +1366,7 @@ async def enviar_reporte_costos(data: dict):
         desde = f"{fecha}T00:00:00"
         hasta = f"{fecha}T23:59:59"
         hist_res = sb.table("historial_costos").select(
-            "producto_id,estado,costo_unidad_anterior,costo_unidad_nuevo,variacion_porcentaje,factura_id"
+            "producto_id,estado,costo_unidad_anterior,costo_unidad_nuevo,variacion_porcentaje,factura_id,presentacion_facturada,costo_presentacion_facturada"
         ).gte("creada_en", desde).lte("creada_en", hasta).in_("estado", ["NUEVO", "SUBIO", "BAJO"]).order("estado").execute()
 
         hist = hist_res.data or []
@@ -1408,6 +1408,8 @@ async def enviar_reporte_costos(data: dict):
                 "factura":     f.get("numero_factura") or "—",
                 "costo_ant":   h.get("costo_unidad_anterior") or 0,
                 "costo_nuevo": cu,
+                "costo_presentacion": h.get("costo_presentacion_facturada") or cu,
+                "presentacion": h.get("presentacion_facturada") or "Unidad",
                 "variacion":   h.get("variacion_porcentaje") or 0,
                 "venta_unidad":  p.get("venta_unidad", True),
                 "venta_paquete": p.get("venta_paquete", False),
@@ -1475,7 +1477,8 @@ async def enviar_reporte_costos(data: dict):
                   </td>
                   <td style="padding:10px 12px;vertical-align:top;white-space:nowrap;">
                     {costo_ant_html}
-                    <strong style="font-size:13px;color:#111;">{fmt(item["costo_nuevo"])}</strong>
+                    <strong style="font-size:13px;color:#111;">{fmt(item["costo_presentacion"])}</strong>
+                    <span style="font-size:11px;color:#888;margin-left:4px;">/ {item["presentacion"]}</span>
                     {variacion_html}
                   </td>
                   <td style="padding:10px 12px;vertical-align:top;">
