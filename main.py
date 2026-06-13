@@ -1624,31 +1624,53 @@ async def sincronizar_forma_pago(data: dict):
     try:
         sb = get_supabase()
         proveedor_nombre = data.get("proveedor_nombre", "")
-        forma_pago = data.get("forma_pago", "")
-        if not proveedor_nombre or not forma_pago:
-            raise HTTPException(status_code=400, detail="Se requiere proveedor_nombre y forma_pago")
+        forma_pago       = data.get("forma_pago", "")
+        descuento_pct    = data.get("descuento_pct")
+
+        if not proveedor_nombre:
+            raise HTTPException(status_code=400, detail="Se requiere proveedor_nombre")
 
         # Obtener lista exacta de nombres en facturas_contables para este proveedor
         facturas = sb.table("facturas_contables").select("proveedor").execute()
         nombres_unicos = list({f["proveedor"] for f in (facturas.data or []) if f.get("proveedor")})
-        
-        # Encontrar los que hacen match con similitud
+
+        # Encontrar los que hacen match por palabras clave
         nombre_lower = proveedor_nombre.lower()
         palabras_clave = [p for p in nombre_lower.split() if len(p) > 3]
-        
+
         nombres_match = []
         for nombre in nombres_unicos:
             nombre_f_lower = nombre.lower()
             if any(p in nombre_f_lower for p in palabras_clave):
                 nombres_match.append(nombre)
-        
-        # Actualizar cada nombre que hace match
-        for nombre in nombres_match:
-            sb.table("facturas_contables").update({
-                "forma_pago": forma_pago
-            }).eq("proveedor", nombre).execute()
 
-        return {"ok": True, "forma_pago": forma_pago, "proveedor": proveedor_nombre}
+        # Armar el update con los campos que vienen
+        for nombre in nombres_match:
+            update_data = {}
+            if forma_pago:
+                update_data["forma_pago"] = forma_pago
+            if descuento_pct is not None:
+                desc = float(descuento_pct)
+                update_data["descuento_pct"] = desc
+                # Recalcular valor_descuento y valor_a_pagar para cada factura
+                facts = sb.table("facturas_contables").select(
+                    "id,subtotal,iva,retefuente,valor_descuento"
+                ).eq("proveedor", nombre).execute()
+                for f in (facts.data or []):
+                    subtotal    = float(f.get("subtotal") or 0)
+                    iva         = float(f.get("iva") or 0)
+                    retefuente  = float(f.get("retefuente") or 0)
+                    valor_desc  = round(subtotal * desc / 100, 2)
+                    valor_pagar = subtotal + iva - valor_desc - retefuente
+                    sb.table("facturas_contables").update({
+                        "descuento_pct":   desc,
+                        "valor_descuento": valor_desc,
+                        "valor_a_pagar":   valor_pagar,
+                    }).eq("id", f["id"]).execute()
+            elif update_data:
+                sb.table("facturas_contables").update(update_data).eq("proveedor", nombre).execute()
+
+        return {"ok": True, "proveedor": proveedor_nombre, "nombres_match": nombres_match}
     except HTTPException:
         raise
     except Exception as e:
