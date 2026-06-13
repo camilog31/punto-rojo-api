@@ -770,7 +770,13 @@ async def save_invoice_endpoint(data: dict):
 
         # Forma de pago: priorizar XML, luego proveedores_contables, default CREDITO
         forma_pago_xml = invoice.get("forma_pago_xml", "")
-        forma_pago = forma_pago_xml or prov_info.get("forma_pago") or "CREDITO"
+        prov_forma_pago = prov_info.get("forma_pago") or ""
+        # Si el proveedor ya tiene forma de pago configurada, usarla
+        # Solo usar el XML si el proveedor es nuevo o no tiene forma de pago
+        if prov_forma_pago:
+            forma_pago = prov_forma_pago
+        else:
+            forma_pago = forma_pago_xml or "CREDITO"
 
         # Actualizar forma_pago y requiere_acuse en proveedores_contables si tenemos id
         pc_id = prov_info.get("id")
