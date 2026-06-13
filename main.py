@@ -1626,8 +1626,9 @@ async def sincronizar_forma_pago(data: dict):
     try:
         sb = get_supabase()
         proveedor_nombre = data.get("proveedor_nombre", "")
-        forma_pago       = data.get("forma_pago", "")
-        descuento_pct    = data.get("descuento_pct")
+        forma_pago        = data.get("forma_pago", "")
+        descuento_pct     = data.get("descuento_pct")
+        aplica_retefuente = data.get("aplica_retefuente")
 
         if not proveedor_nombre:
             raise HTTPException(status_code=400, detail="Se requiere proveedor_nombre")
@@ -1646,18 +1647,27 @@ async def sincronizar_forma_pago(data: dict):
             if any(p in nombre_f_lower for p in palabras_clave):
                 nombres_match.append(nombre)
 
+        # Obtener parámetros de retefuente activos
+        params_rete = sb.table("parametros_retefuente").select(
+            "porcentaje,base_minima"
+        ).eq("aplica_a", "COMPRAS").eq("activo", True).limit(1).execute()
+        pct_rete = float(params_rete.data[0].get("porcentaje") or 2.5) if params_rete.data else 2.5
+        base_min = float(params_rete.data[0].get("base_minima") or 1148000) if params_rete.data else 1148000
+
         # Armar el update con los campos que vienen
         for nombre in nombres_match:
             update_data = {}
             if forma_pago:
                 update_data["forma_pago"] = forma_pago
+
+            # Obtener todas las facturas del proveedor
+            facts = sb.table("facturas_contables").select(
+                "id,subtotal,iva,retefuente,valor_descuento,fecha_factura"
+            ).eq("proveedor", nombre).execute()
+
             if descuento_pct is not None:
                 desc = float(descuento_pct)
                 update_data["descuento_pct"] = desc
-                # Recalcular valor_descuento y valor_a_pagar para cada factura
-                facts = sb.table("facturas_contables").select(
-                    "id,subtotal,iva,retefuente,valor_descuento"
-                ).eq("proveedor", nombre).execute()
                 for f in (facts.data or []):
                     subtotal    = float(f.get("subtotal") or 0)
                     iva         = float(f.get("iva") or 0)
@@ -1669,7 +1679,27 @@ async def sincronizar_forma_pago(data: dict):
                         "valor_descuento": valor_desc,
                         "valor_a_pagar":   valor_pagar,
                     }).eq("id", f["id"]).execute()
-            elif update_data:
+
+            if aplica_retefuente is not None:
+                # Agrupar facturas por fecha y recalcular retefuente
+                fechas = list({f["fecha_factura"] for f in (facts.data or []) if f.get("fecha_factura")})
+                for fecha in fechas:
+                    facts_fecha = [f for f in (facts.data or []) if f.get("fecha_factura") == fecha]
+                    total_subtotal = sum(float(f.get("subtotal") or 0) for f in facts_fecha)
+                    aplica = aplica_retefuente == "SI" and total_subtotal >= base_min
+                    for f in facts_fecha:
+                        subtotal   = float(f.get("subtotal") or 0)
+                        iva        = float(f.get("iva") or 0)
+                        valor_desc = float(f.get("valor_descuento") or 0)
+                        rete_f     = round(subtotal * pct_rete / 100, 2) if aplica else 0.0
+                        valor_pagar = subtotal + iva - valor_desc - rete_f
+                        sb.table("facturas_contables").update({
+                            "aplica_retefuente": aplica_retefuente,
+                            "retefuente":        rete_f,
+                            "valor_a_pagar":     valor_pagar,
+                        }).eq("id", f["id"]).execute()
+
+            if update_data and aplica_retefuente is None and descuento_pct is None:
                 sb.table("facturas_contables").update(update_data).eq("proveedor", nombre).execute()
 
         return {"ok": True, "proveedor": proveedor_nombre, "nombres_match": nombres_match}
