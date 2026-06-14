@@ -675,6 +675,7 @@ async def save_invoice_endpoint(data: dict):
             "iva_modo":       iva_mode,
             "cufe":           invoice.get("cufe"),
             "archivo":        invoice.get("archivo_nombre", ""),
+            "nota":           data.get("nota_factura") or None,
         }).execute()
         factura_id = fac.data[0]["id"]
 
@@ -1553,8 +1554,18 @@ async def enviar_reporte_costos(data: dict):
         ).gte("creada_en", desde).lte("creada_en", hasta).in_("estado", ["NUEVO", "SUBIO", "BAJO"]).order("estado").execute()
 
         hist = hist_res.data or []
-        if not hist:
-            raise HTTPException(status_code=400, detail="No hay productos con cambios en esa fecha")
+
+        # Notas por factura del día (independiente de si hubo cambios de costo)
+        facts_nota_res = sb.table("facturas").select(
+            "id,numero_factura,nota"
+        ).gte("creada_en", desde).lte("creada_en", hasta).execute()
+        facturas_con_nota = [
+            f for f in (facts_nota_res.data or [])
+            if f.get("nota") and f.get("nota").strip()
+        ]
+
+        if not hist and not facturas_con_nota:
+            raise HTTPException(status_code=400, detail="No hay productos con cambios ni notas en esa fecha")
 
         # Obtener productos y facturas relacionados
         prod_ids = list({h["producto_id"] for h in hist})
@@ -1705,6 +1716,25 @@ async def enviar_reporte_costos(data: dict):
         except Exception:
             pass
 
+        # Notas por factura (avisos para revisión)
+        notas_facturas_html = ""
+        if facturas_con_nota:
+            import html as _html
+            filas_notas = "".join(f"""
+                <div style="background:white;border-radius:8px;padding:12px 16px;margin-bottom:8px;border-left:3px solid #f59e0b;">
+                  <p style="font-size:10px;color:#aaa;font-weight:600;text-transform:uppercase;margin:0 0 4px;">Factura {_html.escape(f.get("numero_factura") or "—")}</p>
+                  <p style="font-size:13px;color:#333;margin:0;">{_html.escape(f["nota"])}</p>
+                </div>""" for f in facturas_con_nota)
+            notas_facturas_html = f"""
+            <div style="margin-bottom:20px;">
+              <div style="background:#f59e0b;padding:10px 16px;border-radius:8px 8px 0 0;">
+                <strong style="color:white;font-size:13px;">⚠️ Avisos de facturas ({len(facturas_con_nota)})</strong>
+              </div>
+              <div style="background:#fffbeb;border-radius:0 0 8px 8px;padding:12px;border:1px solid #fde68a;border-top:none;">
+                {filas_notas}
+              </div>
+            </div>"""
+
         html = f"""
         <div style="font-family:sans-serif;max-width:680px;margin:0 auto;background:#f4f4f5;padding:32px;border-radius:12px;">
           <div style="background:#C41E2C;padding:20px 24px;border-radius:8px;margin-bottom:24px;">
@@ -1713,6 +1743,7 @@ async def enviar_reporte_costos(data: dict):
           </div>
           {resumen_html}
           {nota_html}
+          {notas_facturas_html}
           {render_grupo("🆕 Productos nuevos",   "#C41E2C", nuevos)}
           {render_grupo("📈 Subieron de precio", "#ef4444", subieron)}
           {render_grupo("📉 Bajaron de precio",  "#22c55e", bajaron)}
@@ -1728,6 +1759,36 @@ async def enviar_reporte_costos(data: dict):
         })
 
         return {"ok": True, "correo": correo, "total": len(items)}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─── Marcar factura revisada ────────────────────────────────────────────────
+
+@app.post("/marcar-revisado-factura")
+async def marcar_revisado_factura(data: dict):
+    try:
+        sb = get_supabase()
+        factura_id = data.get("factura_id")
+        revisado   = bool(data.get("revisado", True))
+        revisado_por = data.get("revisado_por") or "Usuario"
+
+        if not factura_id:
+            raise HTTPException(status_code=400, detail="Se requiere factura_id")
+
+        update_data = {"revisado": revisado}
+        if revisado:
+            update_data["revisado_por"] = revisado_por
+            update_data["revisado_en"]  = datetime.utcnow().isoformat()
+        else:
+            update_data["revisado_por"] = None
+            update_data["revisado_en"]  = None
+
+        sb.table("facturas").update(update_data).eq("id", factura_id).execute()
+        return {"ok": True}
 
     except HTTPException:
         raise
