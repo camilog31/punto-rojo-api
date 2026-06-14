@@ -113,19 +113,27 @@ def detect_packaging(desc: str):
     return 1, 1, 1
 
 def default_sale_flags(pres: str, up: int, packs: int, box: int):
-    if pres == "Caja/Paca":
+    """Devuelve los 7 flags de venta (unidad, paquete, caja, millar, kg, rollo, metro)
+    según la presentación detectada/asignada."""
+    vu = vp = vc = vmillar = vkg = vrollo = vmetro = False
+    if pres == "Caja/Paca" or pres == "Caja":
         vu = up > 1
         vp = packs > 1
         vc = True
     elif pres == "Paquete":
         vu = up > 1
         vp = True
-        vc = False
+    elif pres == "Millar":
+        vmillar = True
+    elif pres == "Kg":
+        vkg = True
+    elif pres == "Rollo":
+        vrollo = True
+    elif pres == "Metro":
+        vmetro = True
     else:
         vu = True
-        vp = False
-        vc = False
-    return vu, vp, vc
+    return vu, vp, vc, vmillar, vkg, vrollo, vmetro
 
 def get_pres_sugerida(up: int, box: int, packs: int) -> str:
     if box > 1 and packs > 1:
@@ -191,7 +199,7 @@ def parse_invoice(root: ET.Element) -> dict:
 
         up, box, packs = detect_packaging(desc)
         pres = get_pres_sugerida(up, box, packs)
-        vu, vp, vc = default_sale_flags(pres, up, packs, box)
+        vu, vp, vc, vmillar, vkg, vrollo, vmetro = default_sale_flags(pres, up, packs, box)
 
         lines.append({
             "linea": i,
@@ -211,6 +219,10 @@ def parse_invoice(root: ET.Element) -> dict:
             "venta_unidad": vu,
             "venta_paquete": vp,
             "venta_caja": vc,
+            "venta_millar": vmillar,
+            "venta_kg": vkg,
+            "venta_rollo": vrollo,
+            "venta_metro": vmetro,
             "markup_unidad_pct": 40.0,
             "markup_paquete_pct": 35.0,
             "markup_caja_pct": 30.0,
@@ -411,7 +423,7 @@ def find_similar_product(supabase: Client, proveedor_nit: str, sku: str, nombre:
             "id,sku_interno,sku_proveedor,nombre_punto_rojo,categoria,"
             "presentacion_facturada,precio_es_por,unidades_por_paquete,paquetes_por_caja,unidades_por_caja,"
             "costo_unidad_sin_iva,markup_unidad_pct,markup_paquete_pct,markup_caja_pct,"
-            "venta_unidad,venta_paquete,venta_caja,costo_transporte"
+            "venta_unidad,venta_paquete,venta_caja,venta_millar,venta_kg,venta_rollo,venta_metro,costo_transporte"
         ).eq("sku_proveedor", sku).eq("activo", True).limit(1).execute()
         if r.data:
             return {"match": "Exacto", "producto": r.data[0]}
@@ -540,6 +552,10 @@ async def parse_invoice_endpoint(
                 line["venta_unidad"]           = p.get("venta_unidad") if p.get("venta_unidad") is not None else line["venta_unidad"]
                 line["venta_paquete"]          = p.get("venta_paquete") if p.get("venta_paquete") is not None else line["venta_paquete"]
                 line["venta_caja"]             = p.get("venta_caja") if p.get("venta_caja") is not None else line["venta_caja"]
+                line["venta_millar"]           = p.get("venta_millar") if p.get("venta_millar") is not None else line.get("venta_millar", False)
+                line["venta_kg"]               = p.get("venta_kg") if p.get("venta_kg") is not None else line.get("venta_kg", False)
+                line["venta_rollo"]            = p.get("venta_rollo") if p.get("venta_rollo") is not None else line.get("venta_rollo", False)
+                line["venta_metro"]            = p.get("venta_metro") if p.get("venta_metro") is not None else line.get("venta_metro", False)
                 line["costo_anterior"]         = float(p.get("costo_unidad_sin_iva") or 0)
 
     except Exception as e:
@@ -710,6 +726,10 @@ async def save_invoice_endpoint(data: dict):
                     "venta_unidad":           bool(line.get("venta_unidad")),
                     "venta_paquete":          bool(line.get("venta_paquete")),
                     "venta_caja":             bool(line.get("venta_caja")),
+                    "venta_millar":           bool(line.get("venta_millar")),
+                    "venta_kg":               bool(line.get("venta_kg")),
+                    "venta_rollo":            bool(line.get("venta_rollo")),
+                    "venta_metro":            bool(line.get("venta_metro")),
                     "nota_descuento":         line.get("nota_descuento") or "",
                     "precio_factura_base":    precio_fact_base,
                     "precio_es_por":          precio_es_por_s,
@@ -744,6 +764,10 @@ async def save_invoice_endpoint(data: dict):
                     "venta_unidad":           bool(line.get("venta_unidad")),
                     "venta_paquete":          bool(line.get("venta_paquete")),
                     "venta_caja":             bool(line.get("venta_caja")),
+                    "venta_millar":           bool(line.get("venta_millar")),
+                    "venta_kg":               bool(line.get("venta_kg")),
+                    "venta_rollo":            bool(line.get("venta_rollo")),
+                    "venta_metro":            bool(line.get("venta_metro")),
                     "activo":                 True,
                     "ultima_factura":         invoice.get("numero_factura"),
                     "ultima_fecha":           invoice.get("fecha"),
@@ -768,6 +792,10 @@ async def save_invoice_endpoint(data: dict):
                 "venta_unidad":                 bool(line.get("venta_unidad")),
                 "venta_paquete":                bool(line.get("venta_paquete")),
                 "venta_caja":                   bool(line.get("venta_caja")),
+                "venta_millar":                 bool(line.get("venta_millar")),
+                "venta_kg":                     bool(line.get("venta_kg")),
+                "venta_rollo":                  bool(line.get("venta_rollo")),
+                "venta_metro":                  bool(line.get("venta_metro")),
                 "precio_factura_original":      precio_fact_base,
                 "precio_es_por":                precio_es_por_s,
             }).execute()
@@ -1203,6 +1231,10 @@ async def crear_producto_derivado(data: dict):
             "venta_unidad":            bool(data.get("venta_unidad", True)),
             "venta_paquete":           bool(data.get("venta_paquete", False)),
             "venta_caja":              bool(data.get("venta_caja", False)),
+            "venta_millar":            bool(data.get("venta_millar", False)),
+            "venta_kg":                bool(data.get("venta_kg", False)),
+            "venta_rollo":             bool(data.get("venta_rollo", False)),
+            "venta_metro":             bool(data.get("venta_metro", False)),
             "es_materia_prima":        False,
             "materia_prima_id":        materia_prima_id,
             "presentaciones_extra":    presentaciones_extra,
