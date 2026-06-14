@@ -428,7 +428,7 @@ def find_similar_product(supabase: Client, proveedor_nit: str, sku: str, nombre:
             "presentacion_facturada,precio_es_por,unidades_por_paquete,paquetes_por_caja,unidades_por_caja,"
             "costo_unidad_sin_iva,markup_unidad_pct,markup_paquete_pct,markup_caja_pct,"
             "markup_millar_pct,markup_kg_pct,markup_rollo_pct,markup_metro_pct,"
-            "venta_unidad,venta_paquete,venta_caja,venta_millar,venta_kg,venta_rollo,venta_metro,costo_transporte"
+            "venta_unidad,venta_paquete,venta_caja,venta_millar,venta_kg,venta_rollo,venta_metro,costo_transporte,es_materia_prima"
         ).eq("sku_proveedor", sku).eq("activo", True).limit(1).execute()
         if r.data:
             return {"match": "Exacto", "producto": r.data[0]}
@@ -565,6 +565,7 @@ async def parse_invoice_endpoint(
                 line["venta_kg"]               = p.get("venta_kg") if p.get("venta_kg") is not None else line.get("venta_kg", False)
                 line["venta_rollo"]            = p.get("venta_rollo") if p.get("venta_rollo") is not None else line.get("venta_rollo", False)
                 line["venta_metro"]            = p.get("venta_metro") if p.get("venta_metro") is not None else line.get("venta_metro", False)
+                line["es_materia_prima"]       = bool(p.get("es_materia_prima"))
                 line["costo_anterior"]         = float(p.get("costo_unidad_sin_iva") or 0)
 
     except Exception as e:
@@ -737,6 +738,7 @@ async def save_invoice_endpoint(data: dict):
                     "markup_kg_pct":          float(line.get("markup_kg_pct") or 40),
                     "markup_rollo_pct":       float(line.get("markup_rollo_pct") or 40),
                     "markup_metro_pct":       float(line.get("markup_metro_pct") or 40),
+                    **({"es_materia_prima": True} if line.get("es_materia_prima") else {}),
                     "venta_unidad":           bool(line.get("venta_unidad")),
                     "venta_paquete":          bool(line.get("venta_paquete")),
                     "venta_caja":             bool(line.get("venta_caja")),
@@ -786,6 +788,7 @@ async def save_invoice_endpoint(data: dict):
                     "venta_kg":               bool(line.get("venta_kg")),
                     "venta_rollo":            bool(line.get("venta_rollo")),
                     "venta_metro":            bool(line.get("venta_metro")),
+                    "es_materia_prima":       bool(line.get("es_materia_prima")),
                     "activo":                 True,
                     "ultima_factura":         invoice.get("numero_factura"),
                     "ultima_fecha":           invoice.get("fecha"),
