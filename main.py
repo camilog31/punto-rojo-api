@@ -1601,8 +1601,9 @@ async def enviar_reporte_costos(data: dict):
 
         prods_res = sb.table("productos_con_proveedor").select(
             "id,nombre_punto_rojo,sku_interno,categoria,unidades_por_paquete,paquetes_por_caja,unidades_por_caja,"
-            "markup_unidad_pct,markup_paquete_pct,markup_caja_pct,"
-            "costo_paquete_sin_iva,costo_caja_sin_iva,venta_unidad,venta_paquete,venta_caja,proveedor_nombre"
+            "markup_unidad_pct,markup_paquete_pct,markup_caja_pct,markup_millar_pct,markup_kg_pct,markup_rollo_pct,markup_metro_pct,"
+            "costo_paquete_sin_iva,costo_caja_sin_iva,venta_unidad,venta_paquete,venta_caja,"
+            "venta_millar,venta_kg,venta_rollo,venta_metro,proveedor_nombre"
         ).in_("id", prod_ids).execute()
 
         facts_res = sb.table("facturas").select("id,numero_factura").in_("id", fact_ids).execute() if fact_ids else type("R", (), {"data": []})()
@@ -1621,6 +1622,10 @@ async def enviar_reporte_costos(data: dict):
             mu = p.get("markup_unidad_pct") or 40
             mp = p.get("markup_paquete_pct") or 35
             mc = p.get("markup_caja_pct") or 30
+            mMillar = p.get("markup_millar_pct") or 40
+            mKg     = p.get("markup_kg_pct") or 40
+            mRollo  = p.get("markup_rollo_pct") or 40
+            mMetro  = p.get("markup_metro_pct") or 40
             items.append({
                 "estado":      h.get("estado"),
                 "nombre":      p.get("nombre_punto_rojo") or "—",
@@ -1636,11 +1641,19 @@ async def enviar_reporte_costos(data: dict):
                 "venta_unidad":  p.get("venta_unidad", True),
                 "venta_paquete": p.get("venta_paquete", False),
                 "venta_caja":    p.get("venta_caja", False),
+                "venta_millar":  p.get("venta_millar", False),
+                "venta_kg":      p.get("venta_kg", False),
+                "venta_rollo":   p.get("venta_rollo", False),
+                "venta_metro":   p.get("venta_metro", False),
                 "up": p.get("unidades_por_paquete") or 1,
                 "uc": p.get("unidades_por_caja") or 1,
                 "precio_unidad":  round((cu * 1.19) / (1 - mu / 100)) if cu and mu < 100 else 0,
                 "precio_paquete": round((cp * 1.19) / (1 - mp / 100)) if cp and mp < 100 else 0,
                 "precio_caja":    round((cc * 1.19) / (1 - mc / 100)) if cc and mc < 100 else 0,
+                "precio_millar":  round((cu * 1000 * 1.19) / (1 - mMillar / 100)) if cu and mMillar < 100 else 0,
+                "precio_kg":      round((cu * 1.19) / (1 - mKg / 100)) if cu and mKg < 100 else 0,
+                "precio_rollo":   round((cu * 1.19) / (1 - mRollo / 100)) if cu and mRollo < 100 else 0,
+                "precio_metro":   round((cu * 1.19) / (1 - mMetro / 100)) if cu and mMetro < 100 else 0,
                 "mu": mu, "mp": mp, "mc": mc,
             })
 
@@ -1669,6 +1682,14 @@ async def enviar_reporte_costos(data: dict):
                 precios.append(f'<td style="padding:4px 8px;"><span style="font-size:10px;color:#888;">Paq x{item["up"]}</span><br><strong style="font-size:13px;">{fmt(item["precio_paquete"])}</strong></td>')
             if item["venta_caja"]:
                 precios.append(f'<td style="padding:4px 8px;"><span style="font-size:10px;color:#888;">Caja x{item["uc"]}</span><br><strong style="font-size:13px;">{fmt(item["precio_caja"])}</strong></td>')
+            if item["venta_millar"]:
+                precios.append(f'<td style="padding:4px 8px;"><span style="font-size:10px;color:#888;">Millar</span><br><strong style="font-size:13px;">{fmt(item["precio_millar"])}</strong></td>')
+            if item["venta_kg"]:
+                precios.append(f'<td style="padding:4px 8px;"><span style="font-size:10px;color:#888;">Kg</span><br><strong style="font-size:13px;">{fmt(item["precio_kg"])}</strong></td>')
+            if item["venta_rollo"]:
+                precios.append(f'<td style="padding:4px 8px;"><span style="font-size:10px;color:#888;">Rollo</span><br><strong style="font-size:13px;">{fmt(item["precio_rollo"])}</strong></td>')
+            if item["venta_metro"]:
+                precios.append(f'<td style="padding:4px 8px;"><span style="font-size:10px;color:#888;">Metro</span><br><strong style="font-size:13px;">{fmt(item["precio_metro"])}</strong></td>')
             return "".join(precios)
 
         # Agrupar por estado
