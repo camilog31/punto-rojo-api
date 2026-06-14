@@ -283,9 +283,10 @@ def cost_without_tax(precio: float, iva_mode: str, iva_pct: float = IVA_DEFAULT)
         return money(precio / (1 + iva_pct / 100))
     return money(precio)
 
-def calc_costs(costo_fact: float, pres: str, up: int, pc: int, precio_es_por: str = ""):
+def calc_costs(costo_fact: float, pres: str, up: int, pc: int, precio_es_por: str = "", unidades_por_millar: int = 1000):
     up = max(up, 1); pc = max(pc, 1)
     uc = up * pc
+    upm = max(int(unidades_por_millar or 1000), 1)
 
     base = precio_es_por if precio_es_por else (
         "Caja"    if pres == "Caja/Paca" else
@@ -297,11 +298,17 @@ def calc_costs(costo_fact: float, pres: str, up: int, pc: int, precio_es_por: st
         cc = costo_fact
         cp = money(cc / pc) if pc > 1 else cc
         cu = money(cp / up) if up > 1 else cp
+    elif base == "Millar":
+        # El precio facturado es por millar (ej: 10 paquetes de 100, o 20 de 50 -> upm = 1000)
+        cc = costo_fact
+        cu = money(cc / upm) if upm > 1 else cc
+        cp = money(cu * up) if up > 1 else cu
     elif base == "Paquete":
         cp = costo_fact
         cu = money(cp / up) if up > 1 else cp
         cc = money(cp * pc)
     else:
+        # Unidad, Kg, Rollo, Metro -> el precio facturado es directamente el costo de 1 unidad/kg/rollo/metro
         cu = costo_fact
         cp = money(cu * up)
         cc = money(cu * uc)
@@ -364,10 +371,12 @@ def add_calcs(lines: list, iva_mode: str) -> list:
         if not precio_es_por:
             precio_es_por = inferir_precio_es_por(costo_fact_final, up, pc, uc)
 
-        cu, cp, cc = calc_costs(costo_fact_final, pres, up, pc, precio_es_por)
+        upm = int(l.get("unidades_por_millar") or 1000)
+        cu, cp, cc = calc_costs(costo_fact_final, pres, up, pc, precio_es_por, upm)
 
         row = {**l,
             "precio_es_por": precio_es_por,
+            "unidades_por_millar": upm,
             "unidades_por_caja": uc,
             "costo_unidad_sin_iva": cu,
             "costo_paquete_sin_iva": cp,
@@ -663,7 +672,8 @@ async def save_invoice_endpoint(data: dict):
             if not precio_es_por_s:
                 precio_es_por_s = inferir_precio_es_por(costo_final, up, pc, uc)
 
-            cu, cp, cc = calc_costs(costo_final, pres_s, up, pc, precio_es_por_s)
+            upm_s = int(line.get("unidades_por_millar") or 1000)
+            cu, cp, cc = calc_costs(costo_final, pres_s, up, pc, precio_es_por_s, upm_s)
 
             if prod_id:
                 old = sb.table("productos").select("costo_unidad_sin_iva").eq("id", prod_id).single().execute()
@@ -688,6 +698,7 @@ async def save_invoice_endpoint(data: dict):
                     "nota_descuento":         line.get("nota_descuento") or "",
                     "precio_factura_base":    precio_fact_base,
                     "precio_es_por":          precio_es_por_s,
+                    "unidades_por_millar":    upm_s,
                     "iva_porcentaje":         iva_pct_l,
                 }).eq("id", prod_id).execute()
 
@@ -724,6 +735,7 @@ async def save_invoice_endpoint(data: dict):
                     "nota_descuento":         line.get("nota_descuento") or "",
                     "precio_factura_base":    precio_fact_base,
                     "precio_es_por":          precio_es_por_s,
+                    "unidades_por_millar":    upm_s,
                     "iva_porcentaje":         iva_pct_l,
                 }, on_conflict="proveedor_id,sku_proveedor,nombre_factura").execute()
                 prod_id = res.data[0]["id"]
@@ -971,7 +983,7 @@ async def toggle_descuento(data: dict):
 
         prod = sb.table("productos").select(
             "precio_factura_base,precio_es_por,descuento_pct_factura,"
-            "unidades_por_paquete,paquetes_por_caja,presentacion_facturada,iva_porcentaje"
+            "unidades_por_paquete,paquetes_por_caja,presentacion_facturada,iva_porcentaje,unidades_por_millar"
         ).eq("id", prod_id).single().execute()
 
         if not prod.data:
@@ -984,6 +996,7 @@ async def toggle_descuento(data: dict):
         pres          = p.get("presentacion_facturada") or "Unidad"
         up            = int(p.get("unidades_por_paquete") or 1)
         pc            = int(p.get("paquetes_por_caja") or 1)
+        upm           = int(p.get("unidades_por_millar") or 1000)
         iva_pct       = float(p.get("iva_porcentaje") or IVA_DEFAULT)
 
         if precio_base <= 0:
@@ -994,7 +1007,7 @@ async def toggle_descuento(data: dict):
             precio_fact = money(precio_base * (1 - desc_pct / 100))
 
         costo_base = cost_without_tax(precio_fact, "NO_INCLUIDO", iva_pct)
-        cu, cp, cc = calc_costs(costo_base, pres, up, pc, precio_es_por)
+        cu, cp, cc = calc_costs(costo_base, pres, up, pc, precio_es_por, upm)
 
         sb.table("productos").update({
             "costo_unidad_sin_iva":  cu,
@@ -1033,10 +1046,11 @@ async def recalc_precio_es_por(data: dict):
         pres          = data.get("presentacion_facturada", "")
         up            = int(data.get("unidades_por_paquete") or 1)
         pc            = int(data.get("paquetes_por_caja") or 1)
+        upm           = int(data.get("unidades_por_millar") or 0)
 
         prod = sb.table("productos").select(
             "precio_factura_base,descuento_pct_factura,descuento_aplicado,"
-            "presentacion_facturada,unidades_por_paquete,paquetes_por_caja,iva_porcentaje"
+            "presentacion_facturada,unidades_por_paquete,paquetes_por_caja,iva_porcentaje,unidades_por_millar"
         ).eq("id", prod_id).single().execute()
 
         if not prod.data:
@@ -1055,6 +1069,7 @@ async def recalc_precio_es_por(data: dict):
         pres_final = pres or p.get("presentacion_facturada") or "Unidad"
         up_final   = up or int(p.get("unidades_por_paquete") or 1)
         pc_final   = pc or int(p.get("paquetes_por_caja") or 1)
+        upm_final  = upm or int(p.get("unidades_por_millar") or 1000)
         uc_final   = up_final * pc_final
 
         precio_fact = precio_base
@@ -1067,7 +1082,7 @@ async def recalc_precio_es_por(data: dict):
         if not precio_es_por:
             precio_es_por = inferir_precio_es_por(costo_base_val, up_final, pc_final, uc_final)
 
-        cu, cp, cc = calc_costs(costo_base_val, pres_final, up_final, pc_final, precio_es_por)
+        cu, cp, cc = calc_costs(costo_base_val, pres_final, up_final, pc_final, precio_es_por, upm_final)
 
         sb.table("productos").update({
             "precio_es_por":          precio_es_por,
@@ -1075,6 +1090,7 @@ async def recalc_precio_es_por(data: dict):
             "unidades_por_paquete":   up_final,
             "paquetes_por_caja":      pc_final,
             "unidades_por_caja":      uc_final,
+            "unidades_por_millar":    upm_final,
             "costo_unidad_sin_iva":   cu,
             "costo_paquete_sin_iva":  cp,
             "costo_caja_sin_iva":     cc,
@@ -1085,6 +1101,109 @@ async def recalc_precio_es_por(data: dict):
             "costo_unidad_sin_iva":  cu,
             "costo_paquete_sin_iva": cp,
             "costo_caja_sin_iva":    cc,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─── Materias primas y productos derivados ───────────────────────────────────
+
+@app.get("/materias-primas")
+async def listar_materias_primas():
+    """Lista productos marcados como materia prima, para el selector de 'crear derivado de...'."""
+    try:
+        sb = get_supabase()
+        r = sb.table("productos").select(
+            "id,nombre_punto_rojo,sku_interno,categoria,costo_unidad_sin_iva,precio_es_por,unidades_por_paquete,paquetes_por_caja"
+        ).eq("es_materia_prima", True).eq("activo", True).order("nombre_punto_rojo").execute()
+        return {"ok": True, "items": r.data or []}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/crear-producto-derivado")
+async def crear_producto_derivado(data: dict):
+    """
+    Crea un producto derivado de una materia prima (ej: bolsas calculadas a partir
+    de un rollo de plástico comprado por kg), usando la fórmula:
+      costo_x100 = (ancho * largo * constante * calibre * precio_kg) / 10
+    """
+    try:
+        sb = get_supabase()
+
+        nombre        = (data.get("nombre") or "").strip()
+        categoria     = (data.get("categoria") or "").strip()
+        if not nombre:
+            raise HTTPException(status_code=400, detail="El nombre es obligatorio")
+
+        materia_prima_id = data.get("materia_prima_id")
+
+        # Calculadora de bolsas
+        ancho     = float(data.get("ancho") or 0)
+        largo     = float(data.get("largo") or 0)
+        calibre   = float(data.get("calibre") or 0)
+        precio_kg = float(data.get("precio_kg") or 0)
+        constante = float(data.get("constante") or 0.0302)
+        uds_paquete = int(data.get("uds_paquete") or 100)
+
+        costo_unidad = 0.0
+        if ancho > 0 and largo > 0 and calibre > 0 and precio_kg > 0:
+            costo_100 = (ancho * largo * constante * calibre * precio_kg) / 10
+            costo_unidad = money(costo_100 / 100)
+        else:
+            costo_unidad = float(data.get("costo_unidad") or 0)
+
+        up = max(int(data.get("up") or uds_paquete or 1), 1)
+        pc = max(int(data.get("pc") or 1), 1)
+        uc = up * pc
+
+        cp = money(costo_unidad * up)
+        cc = money(costo_unidad * uc)
+
+        sku_int = generate_sku(sb, categoria)
+
+        # presentaciones_extra: lista de presentaciones de venta adicionales (x10, x50, etc.)
+        presentaciones_extra = data.get("presentaciones_extra") or []
+
+        insert_payload = {
+            "sku_interno":             sku_int,
+            "sku_proveedor":           "",
+            "nombre_factura":          nombre,
+            "nombre_punto_rojo":       nombre,
+            "categoria":               categoria,
+            "presentacion_facturada":  data.get("presentacion") or "Unidad",
+            "precio_es_por":           "",
+            "unidades_por_paquete":    up,
+            "paquetes_por_caja":       pc,
+            "unidades_por_caja":       uc,
+            "costo_unidad_sin_iva":    costo_unidad,
+            "costo_paquete_sin_iva":   cp,
+            "costo_caja_sin_iva":      cc,
+            "markup_unidad_pct":       float(data.get("markup_u") or 40),
+            "markup_paquete_pct":      float(data.get("markup_p") or 35),
+            "markup_caja_pct":         float(data.get("markup_c") or 30),
+            "venta_unidad":            bool(data.get("venta_unidad", True)),
+            "venta_paquete":           bool(data.get("venta_paquete", False)),
+            "venta_caja":              bool(data.get("venta_caja", False)),
+            "es_materia_prima":        False,
+            "materia_prima_id":        materia_prima_id,
+            "presentaciones_extra":    presentaciones_extra,
+            "activo":                  True,
+            "nota_descuento":          data.get("notas") or "",
+        }
+
+        res = sb.table("productos").insert(insert_payload).execute()
+        nuevo = res.data[0] if res.data else {}
+
+        return {
+            "ok": True,
+            "producto": nuevo,
+            "costo_unidad_sin_iva": costo_unidad,
+            "costo_paquete_sin_iva": cp,
+            "costo_caja_sin_iva": cc,
         }
 
     except HTTPException:
