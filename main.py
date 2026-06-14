@@ -168,6 +168,12 @@ def parse_invoice(root: ET.Element) -> dict:
         )
         price    = parse_decimal(first_text(line, ["Price","PriceAmount"]))
         line_ext = parse_decimal(first_text(line, ["LineExtensionAmount"]))
+        # precio_unitario_factura: usamos LineExtensionAmount/qty (precio pre-IVA, consistente
+        # con subtotal/total e iva_detectado). En algunos proveedores (ej: Sidell) PriceAmount
+        # ya incluye IVA aunque la factura global sea NO_INCLUIDO, lo que duplicaría el IVA.
+        precio_unitario = (line_ext / qty) if qty else price
+        if precio_unitario <= 0:
+            precio_unitario = price
         line_iva = 0.0
         iva_pct  = IVA_DEFAULT
         for ta in all_descendants(line, "TaxTotal"):
@@ -192,7 +198,7 @@ def parse_invoice(root: ET.Element) -> dict:
             "sku_proveedor": str(sku or ""),
             "nombre_factura": desc,
             "cantidad_facturada": qty,
-            "precio_unitario_factura": price,
+            "precio_unitario_factura": precio_unitario,
             "subtotal_linea": line_ext,
             "iva_linea": line_iva,
             "iva_porcentaje": iva_pct,
@@ -234,12 +240,21 @@ def parse_invoice(root: ET.Element) -> dict:
             m = re.search(r'\$\s*([\d,\.]+)', note_text)
             if m:
                 try:
-                    inpusu = float(m.group(1).replace(",", "").replace(".", ""))
+                    # Formato "$ 53,432.00" -> coma = separador de miles, punto = decimal
+                    inpusu = float(m.group(1).replace(",", ""))
                 except Exception:
                     pass
 
-    total_ajustado = total - inpusu
     tolerancia = max(500, total * 0.02)
+    diff_sin_inpusu = abs((subtotal + iva) - total)
+    diff_con_inpusu = abs((subtotal + iva) - (total - inpusu))
+    # Solo restar el INPUSU si efectivamente acerca el total (evita falsos "INCLUIDO"
+    # cuando el INPUSU es solo informativo y no está sumado al total)
+    if inpusu > 0 and diff_con_inpusu < diff_sin_inpusu:
+        total_ajustado = total - inpusu
+    else:
+        total_ajustado = total
+
     iva_detectado = (
         "NO_INCLUIDO"
         if abs((subtotal + iva) - total_ajustado) < tolerancia
