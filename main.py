@@ -226,6 +226,10 @@ def parse_invoice(root: ET.Element) -> dict:
             "markup_unidad_pct": 40.0,
             "markup_paquete_pct": 35.0,
             "markup_caja_pct": 30.0,
+            "markup_millar_pct": 40.0,
+            "markup_kg_pct": 40.0,
+            "markup_rollo_pct": 40.0,
+            "markup_metro_pct": 40.0,
             "descuento_factura_pct": desc_pct,
             "descuento_factura_amt": desc_amt,
             "nota_descuento": f"Descuento en factura {desc_pct:.0f}% (${(desc_amt / max(qty, 1)):,.0f} por unidad compra)" if desc_amt > 0 else "",
@@ -423,6 +427,7 @@ def find_similar_product(supabase: Client, proveedor_nit: str, sku: str, nombre:
             "id,sku_interno,sku_proveedor,nombre_punto_rojo,categoria,"
             "presentacion_facturada,precio_es_por,unidades_por_paquete,paquetes_por_caja,unidades_por_caja,"
             "costo_unidad_sin_iva,markup_unidad_pct,markup_paquete_pct,markup_caja_pct,"
+            "markup_millar_pct,markup_kg_pct,markup_rollo_pct,markup_metro_pct,"
             "venta_unidad,venta_paquete,venta_caja,venta_millar,venta_kg,venta_rollo,venta_metro,costo_transporte"
         ).eq("sku_proveedor", sku).eq("activo", True).limit(1).execute()
         if r.data:
@@ -549,6 +554,10 @@ async def parse_invoice_endpoint(
                 line["markup_unidad_pct"]      = p.get("markup_unidad_pct") or line["markup_unidad_pct"]
                 line["markup_paquete_pct"]     = p.get("markup_paquete_pct") or line["markup_paquete_pct"]
                 line["markup_caja_pct"]        = p.get("markup_caja_pct") or line["markup_caja_pct"]
+                line["markup_millar_pct"]      = p.get("markup_millar_pct") or line.get("markup_millar_pct", 40.0)
+                line["markup_kg_pct"]          = p.get("markup_kg_pct") or line.get("markup_kg_pct", 40.0)
+                line["markup_rollo_pct"]       = p.get("markup_rollo_pct") or line.get("markup_rollo_pct", 40.0)
+                line["markup_metro_pct"]       = p.get("markup_metro_pct") or line.get("markup_metro_pct", 40.0)
                 line["venta_unidad"]           = p.get("venta_unidad") if p.get("venta_unidad") is not None else line["venta_unidad"]
                 line["venta_paquete"]          = p.get("venta_paquete") if p.get("venta_paquete") is not None else line["venta_paquete"]
                 line["venta_caja"]             = p.get("venta_caja") if p.get("venta_caja") is not None else line["venta_caja"]
@@ -724,6 +733,10 @@ async def save_invoice_endpoint(data: dict):
                     "markup_unidad_pct":      float(line.get("markup_unidad_pct") or 40),
                     "markup_paquete_pct":     float(line.get("markup_paquete_pct") or 35),
                     "markup_caja_pct":        float(line.get("markup_caja_pct") or 30),
+                    "markup_millar_pct":      float(line.get("markup_millar_pct") or 40),
+                    "markup_kg_pct":          float(line.get("markup_kg_pct") or 40),
+                    "markup_rollo_pct":       float(line.get("markup_rollo_pct") or 40),
+                    "markup_metro_pct":       float(line.get("markup_metro_pct") or 40),
                     "venta_unidad":           bool(line.get("venta_unidad")),
                     "venta_paquete":          bool(line.get("venta_paquete")),
                     "venta_caja":             bool(line.get("venta_caja")),
@@ -762,6 +775,10 @@ async def save_invoice_endpoint(data: dict):
                     "markup_unidad_pct":      float(line.get("markup_unidad_pct") or 40),
                     "markup_paquete_pct":     float(line.get("markup_paquete_pct") or 35),
                     "markup_caja_pct":        float(line.get("markup_caja_pct") or 30),
+                    "markup_millar_pct":      float(line.get("markup_millar_pct") or 40),
+                    "markup_kg_pct":          float(line.get("markup_kg_pct") or 40),
+                    "markup_rollo_pct":       float(line.get("markup_rollo_pct") or 40),
+                    "markup_metro_pct":       float(line.get("markup_metro_pct") or 40),
                     "venta_unidad":           bool(line.get("venta_unidad")),
                     "venta_paquete":          bool(line.get("venta_paquete")),
                     "venta_caja":             bool(line.get("venta_caja")),
@@ -797,6 +814,13 @@ async def save_invoice_endpoint(data: dict):
                 "venta_kg":                     bool(line.get("venta_kg")),
                 "venta_rollo":                  bool(line.get("venta_rollo")),
                 "venta_metro":                  bool(line.get("venta_metro")),
+                "markup_unidad_pct":            float(line.get("markup_unidad_pct") or 40),
+                "markup_paquete_pct":           float(line.get("markup_paquete_pct") or 35),
+                "markup_caja_pct":              float(line.get("markup_caja_pct") or 30),
+                "markup_millar_pct":            float(line.get("markup_millar_pct") or 40),
+                "markup_kg_pct":                float(line.get("markup_kg_pct") or 40),
+                "markup_rollo_pct":             float(line.get("markup_rollo_pct") or 40),
+                "markup_metro_pct":             float(line.get("markup_metro_pct") or 40),
                 "precio_factura_original":      precio_fact_base,
                 "precio_es_por":                precio_es_por_s,
             }).execute()
@@ -1229,6 +1253,10 @@ async def crear_producto_derivado(data: dict):
             "markup_unidad_pct":       float(data.get("markup_u") or 40),
             "markup_paquete_pct":      float(data.get("markup_p") or 35),
             "markup_caja_pct":         float(data.get("markup_c") or 30),
+            "markup_millar_pct":       float(data.get("markup_millar") or 40),
+            "markup_kg_pct":           float(data.get("markup_kg") or 40),
+            "markup_rollo_pct":        float(data.get("markup_rollo") or 40),
+            "markup_metro_pct":        float(data.get("markup_metro") or 40),
             "venta_unidad":            bool(data.get("venta_unidad", True)),
             "venta_paquete":           bool(data.get("venta_paquete", False)),
             "venta_caja":              bool(data.get("venta_caja", False)),
