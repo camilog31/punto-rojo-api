@@ -1586,17 +1586,14 @@ async def enviar_reporte_costos(data: dict):
 
         hist = hist_res.data or []
 
-        # Notas por factura del día (independiente de si hubo cambios de costo)
-        facts_nota_res = sb.table("facturas").select(
-            "id,numero_factura,nota"
-        ).gte("creada_en", desde).lte("creada_en", hasta).execute()
-        facturas_con_nota = [
-            f for f in (facts_nota_res.data or [])
-            if f.get("nota") and f.get("nota").strip()
-        ]
+        # Facturas del día (independiente de si hubo cambios de costo)
+        facts_dia_res = sb.table("facturas").select(
+            "id,numero_factura,nota,revisado,revisado_por"
+        ).gte("creada_en", desde).lte("creada_en", hasta).order("id").execute()
+        facturas_dia = facts_dia_res.data or []
 
-        if not hist and not facturas_con_nota:
-            raise HTTPException(status_code=400, detail="No hay productos con cambios ni notas en esa fecha")
+        if not hist and not facturas_dia:
+            raise HTTPException(status_code=400, detail="No hay productos con cambios ni facturas en esa fecha")
 
         # Obtener productos y facturas relacionados
         prod_ids = list({h["producto_id"] for h in hist})
@@ -1768,24 +1765,41 @@ async def enviar_reporte_costos(data: dict):
         except Exception:
             pass
 
-        # Notas por factura (avisos para revisión)
-        notas_facturas_html = ""
-        if facturas_con_nota:
-            import html as _html
-            filas_notas = "".join(f"""
-                <div style="background:white;border-radius:8px;padding:12px 16px;margin-bottom:8px;border-left:3px solid #f59e0b;">
-                  <p style="font-size:10px;color:#aaa;font-weight:600;text-transform:uppercase;margin:0 0 4px;">Factura {_html.escape(f.get("numero_factura") or "—")}</p>
-                  <p style="font-size:13px;color:#333;margin:0;">{_html.escape(f["nota"])}</p>
-                </div>""" for f in facturas_con_nota)
-            notas_facturas_html = f"""
+        # Facturas del día con estado de revisión
+        import html as _html
+        if facturas_dia:
+            filas_facturas = ""
+            for f in facturas_dia:
+                if f.get("revisado"):
+                    badge = f'<span style="display:inline-block;background:#dcfce7;color:#16a34a;font-size:10px;font-weight:600;padding:3px 8px;border-radius:12px;">✓ Revisado{(" por " + _html.escape(f["revisado_por"])) if f.get("revisado_por") else ""}</span>'
+                else:
+                    badge = '<span style="display:inline-block;background:#f3f4f6;color:#9ca3af;font-size:10px;font-weight:600;padding:3px 8px;border-radius:12px;">Sin revisar</span>'
+
+                nota_html_factura = ""
+                if f.get("nota") and f["nota"].strip():
+                    nota_html_factura = f'<p style="font-size:12px;color:#92400e;background:#fffbeb;border-left:3px solid #f59e0b;padding:6px 10px;margin:6px 0 0;border-radius:4px;">⚠️ {_html.escape(f["nota"])}</p>'
+
+                filas_facturas += f"""
+                <tr style="border-bottom:1px solid #f0f0f0;">
+                  <td style="padding:8px 12px;vertical-align:top;">
+                    <strong style="font-size:12px;color:#111;">{_html.escape(f.get("numero_factura") or f"Factura #{f['id']}")}</strong>
+                    {nota_html_factura}
+                  </td>
+                  <td style="padding:8px 12px;vertical-align:top;text-align:right;white-space:nowrap;">{badge}</td>
+                </tr>"""
+
+            n_revisadas = sum(1 for f in facturas_dia if f.get("revisado"))
+            facturas_dia_html = f"""
             <div style="margin-bottom:20px;">
-              <div style="background:#f59e0b;padding:10px 16px;border-radius:8px 8px 0 0;">
-                <strong style="color:white;font-size:13px;">⚠️ Avisos de facturas ({len(facturas_con_nota)})</strong>
+              <div style="background:#444;padding:10px 16px;border-radius:8px 8px 0 0;">
+                <strong style="color:white;font-size:13px;">📄 Facturas del día ({len(facturas_dia)}) · {n_revisadas} revisadas</strong>
               </div>
-              <div style="background:#fffbeb;border-radius:0 0 8px 8px;padding:12px;border:1px solid #fde68a;border-top:none;">
-                {filas_notas}
-              </div>
+              <table width="100%" cellpadding="0" cellspacing="0" style="background:white;border-radius:0 0 8px 8px;overflow:hidden;border:1px solid #eee;border-top:none;">
+                <tbody>{filas_facturas}</tbody>
+              </table>
             </div>"""
+        else:
+            facturas_dia_html = ""
 
         html = f"""
         <div style="font-family:sans-serif;max-width:680px;margin:0 auto;background:#f4f4f5;padding:32px;border-radius:12px;">
@@ -1795,7 +1809,7 @@ async def enviar_reporte_costos(data: dict):
           </div>
           {resumen_html}
           {nota_html}
-          {notas_facturas_html}
+          {facturas_dia_html}
           {render_grupo("🆕 Productos nuevos",   "#C41E2C", nuevos)}
           {render_grupo("📈 Subieron de precio", "#ef4444", subieron)}
           {render_grupo("📉 Bajaron de precio",  "#22c55e", bajaron)}
