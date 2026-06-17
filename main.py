@@ -673,6 +673,22 @@ async def save_invoice_endpoint(data: dict):
             except Exception:
                 pass
 
+        # 1c. Subir PDF de la factura a Storage (si viene en el payload) y obtener URL pública
+        pdf_url = None
+        pdf_b64 = invoice.get("pdf_base64")
+        if pdf_b64:
+            try:
+                import base64 as b64lib
+                pdf_bytes = b64lib.b64decode(pdf_b64)
+                numero_fact_safe = re.sub(r"[^A-Za-z0-9_-]", "_", str(invoice.get("numero_factura") or "factura"))
+                pdf_path = f"{numero_fact_safe}_{int(datetime.now().timestamp())}.pdf"
+                sb.storage.from_("facturas-pdf").upload(
+                    pdf_path, pdf_bytes, {"content-type": "application/pdf"}
+                )
+                pdf_url = sb.storage.from_("facturas-pdf").get_public_url(pdf_path)
+            except Exception:
+                pdf_url = None
+
         # 2. Insertar factura
         fac = sb.table("facturas").insert({
             "proveedor_id":   proveedor_id,
@@ -686,6 +702,7 @@ async def save_invoice_endpoint(data: dict):
             "cufe":           invoice.get("cufe"),
             "archivo":        invoice.get("archivo_nombre", ""),
             "nota":           data.get("nota_factura") or None,
+            "pdf_url":        pdf_url,
         }).execute()
         factura_id = fac.data[0]["id"]
 
