@@ -1215,6 +1215,31 @@ async def listar_materias_primas():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/subir-imagen-producto")
+async def subir_imagen_producto(
+    sku_interno: str,
+    file: UploadFile = File(...),
+):
+    """Sube la imagen de un producto a Storage usando la service key (evita
+    problemas de RLS/sesión en el navegador) y devuelve la URL pública."""
+    try:
+        sb = get_supabase()
+        raw = await file.read()
+        ext = (file.filename or "imagen.jpg").rsplit(".", 1)[-1].lower()
+        if ext not in ("jpg", "jpeg", "png", "webp", "gif"):
+            ext = "jpg"
+        sku_safe = re.sub(r"[^A-Za-z0-9_-]", "_", sku_interno)
+        path = f"{sku_safe}/principal.{ext}"
+
+        sb.storage.from_("Productos").upload(
+            path, raw, {"content-type": file.content_type or "image/jpeg", "upsert": "true"}
+        )
+        url = sb.storage.from_("Productos").get_public_url(path)
+        return {"ok": True, "imagen_url": url}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/crear-producto-derivado")
 async def crear_producto_derivado(data: dict):
     """
