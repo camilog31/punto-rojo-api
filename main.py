@@ -686,8 +686,11 @@ async def save_invoice_endpoint(data: dict):
                     pdf_path, pdf_bytes, {"content-type": "application/pdf"}
                 )
                 pdf_url = sb.storage.from_("facturas-pdf").get_public_url(pdf_path)
-            except Exception:
+            except Exception as pdf_err:
+                print(f"ERROR subiendo PDF a Storage: {pdf_err}")
                 pdf_url = None
+        else:
+            print("No vino pdf_base64 en el payload de save-invoice")
 
         # 2. Insertar factura
         fac = sb.table("facturas").insert({
