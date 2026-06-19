@@ -176,26 +176,41 @@ def parse_invoice(root: ET.Element) -> dict:
         )
         price    = parse_decimal(first_text(line, ["Price","PriceAmount"]))
         line_ext = parse_decimal(first_text(line, ["LineExtensionAmount"]))
-        # precio_unitario_factura: usamos LineExtensionAmount/qty (precio pre-IVA, consistente
-        # con subtotal/total e iva_detectado). En algunos proveedores (ej: Sidell) PriceAmount
-        # ya incluye IVA aunque la factura global sea NO_INCLUIDO, lo que duplicaría el IVA.
-        precio_unitario = (line_ext / qty) if qty else price
-        if precio_unitario <= 0:
-            precio_unitario = price
+
+        # Descuento de línea (AllowanceCharge con ChargeIndicator=false).
+        # BaseAmount es el valor ANTES del descuento; Amount es el descuento;
+        # por estándar DIAN/UBL siempre se cumple: BaseAmount - Amount = LineExtensionAmount.
+        desc_amt  = 0.0
+        desc_pct  = 0.0
+        base_amt  = 0.0
+        for ac in all_descendants(line, "AllowanceCharge"):
+            charge_ind = first_text(ac, ["ChargeIndicator"])
+            if charge_ind.lower() == "false":
+                desc_amt = parse_decimal(first_text(ac, ["Amount"]))
+                desc_pct = parse_decimal(first_text(ac, ["MultiplierFactorNumeric"]))
+                base_amt = parse_decimal(first_text(ac, ["BaseAmount"]))
+
+        # precio_unitario_factura: precio BRUTO por unidad, antes de cualquier descuento de línea.
+        # - Si hay descuento de línea, usamos BaseAmount/qty (consistente y confiable entre
+        #   proveedores; PriceAmount no lo es: algunos lo reportan por caja, otros con otro
+        #   significado que no cuadra matemáticamente con BaseAmount/LineExtensionAmount).
+        # - Si NO hay descuento, mantenemos el cálculo original: LineExtensionAmount/qty
+        #   (precio pre-IVA, consistente con subtotal/total e iva_detectado). En algunos
+        #   proveedores (ej: Sidell) PriceAmount ya incluye IVA aunque la factura global sea
+        #   NO_INCLUIDO, lo que duplicaría el IVA si lo usáramos directamente.
+        if desc_amt > 0 and base_amt > 0:
+            precio_unitario = base_amt / qty if qty else base_amt
+        else:
+            precio_unitario = (line_ext / qty) if qty else price
+            if precio_unitario <= 0:
+                precio_unitario = price
+
         line_iva = 0.0
         iva_pct  = IVA_DEFAULT
         for ta in all_descendants(line, "TaxTotal"):
             line_iva += parse_decimal(first_text(ta, ["TaxAmount"]))
             pct = parse_decimal(first_text(ta, ["TaxSubtotal","TaxCategory","Percent"]), 0)
             if pct: iva_pct = pct
-
-        desc_amt = 0.0
-        desc_pct = 0.0
-        for ac in all_descendants(line, "AllowanceCharge"):
-            charge_ind = first_text(ac, ["ChargeIndicator"])
-            if charge_ind.lower() == "false":
-                desc_amt = parse_decimal(first_text(ac, ["Amount"]))
-                desc_pct = parse_decimal(first_text(ac, ["MultiplierFactorNumeric"]))
 
         up, box, packs = detect_packaging(desc)
         pres = get_pres_sugerida(up, box, packs)
