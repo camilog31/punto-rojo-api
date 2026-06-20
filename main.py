@@ -1804,10 +1804,11 @@ async def enviar_reporte_costos(data: dict):
             filas = ""
             for item in grupo:
                 variacion_html = ""
-                if item["variacion"] != 0:
+                if item["variacion"] != 0 and item["costo_ant"] > 0:
                     arrow = "↑" if item["variacion"] > 0 else "↓"
                     col   = "#ef4444" if item["variacion"] > 0 else "#22c55e"
-                    variacion_html = f'<span style="color:{col};font-weight:bold;margin-left:6px;">{arrow}{abs(item["variacion"])}%</span>'
+                    diff_valor = abs(item["costo_nuevo"] - item["costo_ant"])
+                    variacion_html = f'<span style="color:{col};font-weight:bold;margin-left:6px;">{arrow}{fmt(diff_valor)} ({abs(item["variacion"])}%)</span>'
 
                 costo_ant_html = ""
                 if item["costo_ant"] > 0:
