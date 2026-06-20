@@ -932,10 +932,11 @@ async def save_invoice_endpoint(data: dict):
             forma_pago = forma_pago_xml or "CREDITO"
 
         # Actualizar forma_pago y requiere_acuse en proveedores_contables si tenemos id
+        # Regla de negocio: el acuse DIAN solo aplica a facturas de CREDITO (no CONTADO, no OTRO)
         pc_id = prov_info.get("id")
         if pc_id and forma_pago_xml:
             try:
-                requiere_acuse = forma_pago != "CONTADO"
+                requiere_acuse = forma_pago == "CREDITO"
                 sb.table("proveedores_contables").update({
                     "forma_pago": forma_pago,
                     "requiere_acuse": requiere_acuse,
@@ -950,7 +951,7 @@ async def save_invoice_endpoint(data: dict):
                     "proveedor_nombre": nombre,
                     "nit": nit or "",
                     "forma_pago": forma_pago,
-                    "requiere_acuse": forma_pago != "CONTADO",
+                    "requiere_acuse": forma_pago == "CREDITO",
                     "aplica_retefuente": "NO",
                     "descuento_pct": 0,
                     "regimen": "COMUN",
