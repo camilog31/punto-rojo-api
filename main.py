@@ -753,7 +753,7 @@ async def save_invoice_endpoint(data: dict):
             cu, cp, cc = calc_costs(costo_final, pres_s, up, pc, precio_es_por_s, upm_s)
 
             if prod_id:
-                old = sb.table("productos").select("costo_unidad_sin_iva").eq("id", prod_id).single().execute()
+                old = sb.table("productos").select("costo_unidad_sin_iva").eq("id", prod_id).maybe_single().execute()
                 costo_ant = float(old.data.get("costo_unidad_sin_iva") or 0) if old.data else 0
                 variacion = round(((cu - costo_ant) / costo_ant * 100), 2) if costo_ant > 0 else 0
 
