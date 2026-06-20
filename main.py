@@ -245,7 +245,7 @@ def parse_invoice(root: ET.Element) -> dict:
             "venta_metro": vmetro,
             "markup_unidad_pct": 40.0,
             "markup_paquete_pct": 35.0,
-            "markup_caja_pct": 30.0,
+            "markup_caja_pct": 31.58,
             "markup_millar_pct": 40.0,
             "markup_kg_pct": 40.0,
             "markup_rollo_pct": 40.0,
@@ -406,7 +406,7 @@ def add_calcs(lines: list, iva_mode: str) -> list:
         pres = l.get("presentacion_facturada", "Unidad")
         mu   = float(l.get("markup_unidad_pct") or 40)
         mp   = float(l.get("markup_paquete_pct") or 35)
-        mc   = float(l.get("markup_caja_pct") or 30)
+        mc   = float(l.get("markup_caja_pct") or 31.58)
 
         precio_fact = l.get("precio_unitario_factura") or (l.get("subtotal_linea", 0) / max(l.get("cantidad_facturada", 1), 1))
         desc_pct = float(l.get("descuento_factura_pct") or 0)
@@ -803,7 +803,7 @@ async def save_invoice_endpoint(data: dict):
                     "ultima_fecha":           invoice.get("fecha"),
                     "markup_unidad_pct":      float(line.get("markup_unidad_pct") or 40),
                     "markup_paquete_pct":     float(line.get("markup_paquete_pct") or 35),
-                    "markup_caja_pct":        float(line.get("markup_caja_pct") or 30),
+                    "markup_caja_pct":        float(line.get("markup_caja_pct") or 31.58),
                     "markup_millar_pct":      float(line.get("markup_millar_pct") or 40),
                     "markup_kg_pct":          float(line.get("markup_kg_pct") or 40),
                     "markup_rollo_pct":       float(line.get("markup_rollo_pct") or 40),
@@ -846,7 +846,7 @@ async def save_invoice_endpoint(data: dict):
                     "costo_caja_sin_iva":     cc,
                     "markup_unidad_pct":      float(line.get("markup_unidad_pct") or 40),
                     "markup_paquete_pct":     float(line.get("markup_paquete_pct") or 35),
-                    "markup_caja_pct":        float(line.get("markup_caja_pct") or 30),
+                    "markup_caja_pct":        float(line.get("markup_caja_pct") or 31.58),
                     "markup_millar_pct":      float(line.get("markup_millar_pct") or 40),
                     "markup_kg_pct":          float(line.get("markup_kg_pct") or 40),
                     "markup_rollo_pct":       float(line.get("markup_rollo_pct") or 40),
@@ -889,7 +889,7 @@ async def save_invoice_endpoint(data: dict):
                 "venta_metro":                  bool(line.get("venta_metro")),
                 "markup_unidad_pct":            float(line.get("markup_unidad_pct") or 40),
                 "markup_paquete_pct":           float(line.get("markup_paquete_pct") or 35),
-                "markup_caja_pct":              float(line.get("markup_caja_pct") or 30),
+                "markup_caja_pct":              float(line.get("markup_caja_pct") or 31.58),
                 "markup_millar_pct":            float(line.get("markup_millar_pct") or 40),
                 "markup_kg_pct":                float(line.get("markup_kg_pct") or 40),
                 "markup_rollo_pct":             float(line.get("markup_rollo_pct") or 40),
@@ -1357,7 +1357,7 @@ async def crear_producto_derivado(data: dict):
             "costo_caja_sin_iva":      cc,
             "markup_unidad_pct":       float(data.get("markup_u") or 40),
             "markup_paquete_pct":      float(data.get("markup_p") or 35),
-            "markup_caja_pct":         float(data.get("markup_c") or 30),
+            "markup_caja_pct":         float(data.get("markup_c") or 31.58),
             "markup_millar_pct":       float(data.get("markup_millar") or 40),
             "markup_kg_pct":           float(data.get("markup_kg") or 40),
             "markup_rollo_pct":        float(data.get("markup_rollo") or 40),
@@ -1723,7 +1723,7 @@ async def enviar_reporte_costos(data: dict):
             cc = p.get("costo_caja_sin_iva") or cu * (p.get("unidades_por_caja") or 1)
             mu = p.get("markup_unidad_pct") or 40
             mp = p.get("markup_paquete_pct") or 35
-            mc = p.get("markup_caja_pct") or 30
+            mc = p.get("markup_caja_pct") or 31.58
             mMillar = p.get("markup_millar_pct") or 40
             mKg     = p.get("markup_kg_pct") or 40
             mRollo  = p.get("markup_rollo_pct") or 40
