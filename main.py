@@ -497,6 +497,29 @@ def get_proveedor_info(supabase: Client, nit: str, nombre: str) -> dict:
         pass
     return {}
 
+def estimar_retefuente(supabase: Client, prov_info: dict, subtotal: float, fecha_factura: str, retefuente_xml: float = 0.0) -> float:
+    """Calcula el retefuente esperado para una factura, igual lógica que /save-invoice.
+    Se usa tanto en el preview (/parse-invoice) como al guardar, para evitar que ambos
+    lugares calculen valores distintos."""
+    if retefuente_xml and retefuente_xml > 0:
+        return retefuente_xml
+    aplica_rete = prov_info.get("aplica_retefuente", "NO")
+    if aplica_rete != "SI":
+        return 0.0
+    try:
+        fecha_factura = fecha_factura or str(date.today())
+        params = supabase.table("parametros_retefuente").select(
+            "porcentaje,base_minima"
+        ).eq("aplica_a", "COMPRAS").eq("activo", True).lte("vigente_desde", fecha_factura).gte("vigente_hasta", fecha_factura).limit(1).execute()
+        if params.data:
+            pct_rete = float(params.data[0].get("porcentaje") or 2.5)
+            base_min = float(params.data[0].get("base_minima") or 1148000)
+            if subtotal >= base_min:
+                return round(subtotal * pct_rete / 100, 2)
+    except Exception:
+        pass
+    return 0.0
+
 # ─── Endpoints ───────────────────────────────────────────────────────────────
 
 @app.get("/")
@@ -543,12 +566,19 @@ async def parse_invoice_endpoint(
         invoice["es_duplicado"] = check_duplicate(sb, invoice["cufe"], invoice["numero_factura"])
         prov_info = get_proveedor_info(sb, invoice["proveedor_nit"] or "", invoice["proveedor"])
         invoice["proveedor_info"] = prov_info
+        invoice["retefuente_estimado"] = estimar_retefuente(
+            sb, prov_info,
+            float(invoice.get("subtotal_factura") or 0),
+            invoice.get("fecha") or "",
+            float(invoice.get("retefuente_xml") or 0),
+        )
         for line in invoice["lineas"]:
             line["descuento_afecta_costo"] = False
     except Exception as e:
         invoice["supabase_error"] = str(e)
         invoice["es_duplicado"] = False
         invoice["proveedor_info"] = {}
+        invoice["retefuente_estimado"] = float(invoice.get("retefuente_xml") or 0)
 
     invoice["iva_mode_usado"] = iva_mode
 
@@ -935,25 +965,9 @@ async def save_invoice_endpoint(data: dict):
         iva_val    = float(invoice.get("iva_factura") or 0)
         valor_desc = round(subtotal * desc_pct / 100, 2)
 
-        retefuente     = 0.0
-        aplica_rete    = prov_info.get("aplica_retefuente", "NO")
         retefuente_xml = float(invoice.get("retefuente_xml") or 0)
-
-        if retefuente_xml > 0:
-            retefuente = retefuente_xml
-        elif aplica_rete == "SI":
-            try:
-                fecha_factura = invoice.get("fecha") or str(date.today())
-                params = sb.table("parametros_retefuente").select(
-                    "porcentaje,base_minima"
-                ).eq("aplica_a", "COMPRAS").eq("activo", True).lte("vigente_desde", fecha_factura).gte("vigente_hasta", fecha_factura).limit(1).execute()
-                if params.data:
-                    pct_rete = float(params.data[0].get("porcentaje") or 2.5)
-                    base_min = float(params.data[0].get("base_minima") or 1148000)
-                    if subtotal >= base_min:
-                        retefuente = round(subtotal * pct_rete / 100, 2)
-            except Exception:
-                retefuente = 0.0
+        aplica_rete    = prov_info.get("aplica_retefuente", "NO")
+        retefuente     = estimar_retefuente(sb, prov_info, subtotal, invoice.get("fecha") or "", retefuente_xml)
 
         valor_pagar = subtotal + iva_val - valor_desc - retefuente
 
