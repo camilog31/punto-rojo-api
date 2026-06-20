@@ -169,9 +169,14 @@ def parse_invoice(root: ET.Element) -> dict:
     for i, line in enumerate(all_descendants(root, "InvoiceLine"), start=1):
         qty      = parse_decimal(first_text(line, ["InvoicedQuantity"]), 1) or 1
         desc     = first_text(line, ["Item","Description"]) or first_text(line, ["Item","Name"]) or ""
-        sku      = (
-            first_text(line, ["Item","StandardItemIdentification","ID"]) or
-            first_text(line, ["Item","SellersItemIdentification","ID"]) or
+
+        def _id_valido(txt):
+            txt = (txt or "").strip()
+            return txt if txt and txt != "0" else ""
+
+        sku = (
+            _id_valido(first_text(line, ["Item","StandardItemIdentification","ID"])) or
+            _id_valido(first_text(line, ["Item","SellersItemIdentification","ID"])) or
             f"L{i:03d}"
         )
         price    = parse_decimal(first_text(line, ["Price","PriceAmount"]))
@@ -753,7 +758,7 @@ async def save_invoice_endpoint(data: dict):
             cu, cp, cc = calc_costs(costo_final, pres_s, up, pc, precio_es_por_s, upm_s)
 
             if prod_id:
-                old = sb.table("productos").select("costo_unidad_sin_iva").eq("id", prod_id).maybe_single().execute()
+                old = sb.table("productos").select("costo_unidad_sin_iva").eq("id", prod_id).single().execute()
                 costo_ant = float(old.data.get("costo_unidad_sin_iva") or 0) if old.data else 0
                 variacion = round(((cu - costo_ant) / costo_ant * 100), 2) if costo_ant > 0 else 0
 
