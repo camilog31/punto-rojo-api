@@ -957,6 +957,8 @@ async def save_invoice_endpoint(data: dict):
 
         valor_pagar = subtotal + iva_val - valor_desc - retefuente
 
+        marcar_acuse = bool(data.get("marcar_acuse", False))
+
         sb.table("facturas_contables").insert({
             "factura_id":        factura_id,
             "proveedor":         nombre,
@@ -973,6 +975,8 @@ async def save_invoice_endpoint(data: dict):
             "valor_a_pagar":     valor_pagar,
             "precios_revisados": "NO",
             "cufe":              invoice.get("cufe", ""),
+            "acuse":             "SI" if marcar_acuse else "NO",
+            "fecha_acuse":       str(date.today()) if marcar_acuse else None,
         }).execute()
 
         if not retefuente_xml:
@@ -1231,6 +1235,25 @@ async def listar_materias_primas():
             "id,nombre_punto_rojo,sku_interno,categoria,costo_unidad_sin_iva,precio_es_por,unidades_por_paquete,paquetes_por_caja"
         ).eq("es_materia_prima", True).eq("activo", True).order("nombre_punto_rojo").execute()
         return {"ok": True, "items": r.data or []}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/categorias")
+async def listar_categorias():
+    """Lista categorías únicas ya usadas en productos, para el dropdown del preview de factura."""
+    try:
+        sb = get_supabase()
+        r = sb.table("productos").select("categoria").eq("activo", True).execute()
+        vistas = set()
+        categorias = []
+        for row in (r.data or []):
+            cat = (row.get("categoria") or "").strip()
+            if cat and cat.upper() not in vistas:
+                vistas.add(cat.upper())
+                categorias.append(cat)
+        categorias.sort(key=lambda c: c.upper())
+        return {"ok": True, "categorias": categorias}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
