@@ -1997,7 +1997,13 @@ async def eliminar_factura(factura_id: int):
         # 6. Borrar factura contable
         sb.table("facturas_contables").delete().eq("numero_factura", numero_factura).execute()
 
-        # 7. Restaurar costo anterior en productos (desde historial previo)
+        # 7. Restaurar costo anterior en productos (desde historial previo).
+        # Si un producto se queda SIN ningún historial restante, significa que esta
+        # factura era su única referencia real (ej. factura de prueba) — en vez de
+        # dejarlo con el costo contaminado para siempre, se desactiva (igual que se
+        # hace con productos corruptos por SKU duplicado). La próxima factura real
+        # de ese producto creará uno nuevo y limpio.
+        productos_desactivados = []
         for prod_id in prod_ids:
             try:
                 ultimo = sb.table("historial_costos").select(
@@ -2007,14 +2013,21 @@ async def eliminar_factura(factura_id: int):
                     sb.table("productos").update({
                         "costo_unidad_sin_iva": ultimo.data[0]["costo_unidad_nuevo"],
                     }).eq("id", prod_id).execute()
-                # Si ya no tiene historial, no tocar el producto
+                else:
+                    sb.table("productos").update({"activo": False}).eq("id", prod_id).execute()
+                    productos_desactivados.append(prod_id)
             except Exception:
                 pass
 
         # 8. Borrar la factura principal
         sb.table("facturas").delete().eq("id", factura_id).execute()
 
-        return {"ok": True, "numero_factura": numero_factura, "productos_afectados": len(prod_ids)}
+        return {
+            "ok": True,
+            "numero_factura": numero_factura,
+            "productos_afectados": len(prod_ids),
+            "productos_desactivados": productos_desactivados,
+        }
 
     except HTTPException:
         raise
