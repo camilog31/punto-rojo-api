@@ -1998,13 +1998,24 @@ async def eliminar_factura(factura_id: int):
         # 4. Borrar historial_costos de esa factura
         sb.table("historial_costos").delete().eq("factura_id", factura_id).execute()
 
-        # 5. Borrar notas_credito relacionadas
-        fc = sb.table("facturas_contables").select("id").eq("numero_factura", numero_factura).execute()
+        # 5. Borrar notas_credito relacionadas (y capturar proveedor/fecha para
+        # recalcular la retefuente del grupo después de borrar, por si esta factura
+        # formaba parte de una suma con otras del mismo proveedor/día)
+        fc = sb.table("facturas_contables").select("id,proveedor,fecha_factura").eq("numero_factura", numero_factura).execute()
+        proveedor_fc = None
+        fecha_fc = None
         if fc.data:
             sb.table("notas_credito").delete().eq("factura_contable_id", fc.data[0]["id"]).execute()
+            proveedor_fc = fc.data[0].get("proveedor")
+            fecha_fc = fc.data[0].get("fecha_factura")
 
         # 6. Borrar factura contable
         sb.table("facturas_contables").delete().eq("numero_factura", numero_factura).execute()
+
+        # 6b. Recalcular retefuente de las facturas restantes del mismo proveedor/fecha
+        # (si esta factura sumaba al total que activaba o desactivaba la base mínima)
+        if proveedor_fc and fecha_fc:
+            recalcular_retefuente_grupo(sb, proveedor_fc, fecha_fc, "SI")
 
         # 7. Restaurar costo anterior en productos (desde historial previo).
         # Si un producto se queda SIN ningún historial restante, significa que esta
