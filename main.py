@@ -685,7 +685,7 @@ def recalcular_retefuente_grupo(supabase: Client, proveedor: str, fecha_factura:
 
 
 def generate_sku(supabase: Client, categoria: str) -> str:
-    import unicodedata
+    import unicodedata, re
     prefix = categoria.strip().upper() if categoria else "PROD"
     prefix = ''.join(
         c for c in unicodedata.normalize('NFD', prefix)
@@ -694,12 +694,19 @@ def generate_sku(supabase: Client, categoria: str) -> str:
     prefix = ''.join(c for c in prefix if c.isalnum())[:8]
     if not prefix:
         prefix = "PROD"
+    # Usamos el número más alto ya usado (no un conteo), porque si algún producto
+    # se elimina queda un "hueco" en la numeración y un conteo simple puede volver
+    # a generar un SKU que ya existe (causaba error de duplicado).
+    max_num = 0
     try:
         r = supabase.table("productos").select("sku_interno").like("sku_interno", f"{prefix}-%").execute()
-        count = len(r.data) if r.data else 0
+        for row in (r.data or []):
+            m = re.match(rf"^{re.escape(prefix)}-(\d+)$", row.get("sku_interno") or "")
+            if m:
+                max_num = max(max_num, int(m.group(1)))
     except Exception:
-        count = 0
-    return f"{prefix}-{str(count + 1).zfill(4)}"
+        pass
+    return f"{prefix}-{str(max_num + 1).zfill(4)}"
 
 
 @app.post("/save-invoice")
