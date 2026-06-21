@@ -7,8 +7,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, date
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional
-from fastapi import FastAPI, UploadFile, File, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from supabase import create_client, Client
@@ -19,17 +18,9 @@ load_dotenv()
 
 app = FastAPI(title="Punto Rojo API", version="1.0.0")
 
-# Solo el dominio real de la app puede llamar a esta API desde un navegador.
-# Si en algún momento agregas otro dominio (ej. un dominio propio nuevo),
-# agrégalo a esta lista.
-ORIGENES_PERMITIDOS = [
-    "https://costos-punto-rojo-app.vercel.app",
-    "http://localhost:3000",
-]
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ORIGENES_PERMITIDOS,
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -41,35 +32,6 @@ IVA_DEFAULT  = 19.0
 
 def get_supabase() -> Client:
     return create_client(SUPABASE_URL, SUPABASE_KEY)
-
-# ─── Middleware de autenticación ─────────────────────────────────────────────
-# Verifica que cada petición traiga un token de sesión válido de Supabase
-# (el mismo token que ya usa el frontend tras el login). Sin esto, cualquiera
-# que conozca la URL de Railway podía llamar a cualquier endpoint sin login.
-#
-# Rutas exceptuadas: documentación automática de FastAPI y la raíz (para que
-# Railway pueda hacer su healthcheck sin fallar).
-RUTAS_PUBLICAS = {"/", "/docs", "/openapi.json", "/redoc"}
-
-@app.middleware("http")
-async def verificar_sesion(request: Request, call_next):
-    if request.method == "OPTIONS" or request.url.path in RUTAS_PUBLICAS:
-        return await call_next(request)
-
-    auth_header = request.headers.get("authorization") or request.headers.get("Authorization")
-    if not auth_header or not auth_header.lower().startswith("bearer "):
-        return JSONResponse(status_code=401, content={"detail": "No autenticado"})
-
-    token = auth_header.split(" ", 1)[1].strip()
-    try:
-        sb = get_supabase()
-        user_resp = sb.auth.get_user(token)
-        if not user_resp or not user_resp.user:
-            return JSONResponse(status_code=401, content={"detail": "Sesión inválida o expirada"})
-    except Exception:
-        return JSONResponse(status_code=401, content={"detail": "Sesión inválida o expirada"})
-
-    return await call_next(request)
 
 # ─── Helpers XML ────────────────────────────────────────────────────────────
 
@@ -546,9 +508,14 @@ def estimar_retefuente(supabase: Client, prov_info: dict, subtotal: float, fecha
         return 0.0
     try:
         fecha_factura = fecha_factura or str(date.today())
+        # vigente_desde / vigente_hasta pueden quedar vacíos cuando el parámetro está
+        # activo sin fecha de inicio/corte definida — un NULL en cualquiera de las dos
+        # columnas no debe excluir el registro.
         params = supabase.table("parametros_retefuente").select(
             "porcentaje,base_minima"
-        ).eq("aplica_a", "COMPRAS").eq("activo", True).lte("vigente_desde", fecha_factura).gte("vigente_hasta", fecha_factura).limit(1).execute()
+        ).eq("aplica_a", "COMPRAS").eq("activo", True) \
+         .or_(f"vigente_desde.is.null,vigente_desde.lte.{fecha_factura}") \
+         .or_(f"vigente_hasta.is.null,vigente_hasta.gte.{fecha_factura}").limit(1).execute()
         if params.data:
             pct_rete = float(params.data[0].get("porcentaje") or 2.5)
             base_min = float(params.data[0].get("base_minima") or 1148000)
@@ -669,9 +636,13 @@ def recalcular_retefuente_grupo(supabase: Client, proveedor: str, fecha_factura:
     if aplica_rete != "SI":
         return
     try:
+        # Mismo fix que en estimar_retefuente: NULL en vigente_desde/vigente_hasta
+        # no debe excluir el parámetro vigente.
         params = supabase.table("parametros_retefuente").select(
             "porcentaje,base_minima"
-        ).eq("aplica_a", "COMPRAS").eq("activo", True).lte("vigente_desde", fecha_factura).gte("vigente_hasta", fecha_factura).limit(1).execute()
+        ).eq("aplica_a", "COMPRAS").eq("activo", True) \
+         .or_(f"vigente_desde.is.null,vigente_desde.lte.{fecha_factura}") \
+         .or_(f"vigente_hasta.is.null,vigente_hasta.gte.{fecha_factura}").limit(1).execute()
         if not params.data:
             return
         pct_rete = float(params.data[0].get("porcentaje") or 2.5)
