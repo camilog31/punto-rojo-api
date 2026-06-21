@@ -7,7 +7,8 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, date
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from supabase import create_client, Client
@@ -18,9 +19,17 @@ load_dotenv()
 
 app = FastAPI(title="Punto Rojo API", version="1.0.0")
 
+# Solo el dominio real de la app puede llamar a esta API desde un navegador.
+# Si en algún momento agregas otro dominio (ej. un dominio propio nuevo),
+# agrégalo a esta lista.
+ORIGENES_PERMITIDOS = [
+    "https://costos-punto-rojo-app.vercel.app",
+    "http://localhost:3000",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ORIGENES_PERMITIDOS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -32,6 +41,35 @@ IVA_DEFAULT  = 19.0
 
 def get_supabase() -> Client:
     return create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# ─── Middleware de autenticación ─────────────────────────────────────────────
+# Verifica que cada petición traiga un token de sesión válido de Supabase
+# (el mismo token que ya usa el frontend tras el login). Sin esto, cualquiera
+# que conozca la URL de Railway podía llamar a cualquier endpoint sin login.
+#
+# Rutas exceptuadas: documentación automática de FastAPI y la raíz (para que
+# Railway pueda hacer su healthcheck sin fallar).
+RUTAS_PUBLICAS = {"/", "/docs", "/openapi.json", "/redoc"}
+
+@app.middleware("http")
+async def verificar_sesion(request: Request, call_next):
+    if request.method == "OPTIONS" or request.url.path in RUTAS_PUBLICAS:
+        return await call_next(request)
+
+    auth_header = request.headers.get("authorization") or request.headers.get("Authorization")
+    if not auth_header or not auth_header.lower().startswith("bearer "):
+        return JSONResponse(status_code=401, content={"detail": "No autenticado"})
+
+    token = auth_header.split(" ", 1)[1].strip()
+    try:
+        sb = get_supabase()
+        user_resp = sb.auth.get_user(token)
+        if not user_resp or not user_resp.user:
+            return JSONResponse(status_code=401, content={"detail": "Sesión inválida o expirada"})
+    except Exception:
+        return JSONResponse(status_code=401, content={"detail": "Sesión inválida o expirada"})
+
+    return await call_next(request)
 
 # ─── Helpers XML ────────────────────────────────────────────────────────────
 
