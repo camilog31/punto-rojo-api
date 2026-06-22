@@ -997,7 +997,6 @@ async def save_invoice_endpoint(data: dict):
                     "proveedor_nombre": nombre,
                     "nit": nit or "",
                     "forma_pago": forma_pago,
-                    "requiere_acuse": forma_pago == "CREDITO",
                     "aplica_retefuente": "NO",
                     "descuento_pct": 0,
                     "regimen": "COMUN",
