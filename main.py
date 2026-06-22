@@ -441,7 +441,15 @@ def add_calcs(lines: list, iva_mode: str) -> list:
 
 # ─── Búsqueda de productos similares en Supabase ─────────────────────────────
 
+def _es_sku_temporal(sku: str) -> bool:
+    """SKUs tipo L001, L002... son temporales asignados cuando el proveedor
+    no manda un código real. Nunca deben usarse para buscar matches."""
+    return bool(re.match(r'^L\d{3}$', (sku or "").strip()))
+
 def find_similar_product(supabase: Client, proveedor_nit: str, sku: str, nombre: str):
+    # SKU vacío o temporal → nunca hacer match, siempre es producto nuevo
+    if not sku or _es_sku_temporal(sku):
+        return {"match": "Nuevo", "producto": None}
     try:
         r = supabase.table("productos").select(
             "id,sku_interno,sku_proveedor,nombre_punto_rojo,categoria,"
@@ -846,9 +854,18 @@ async def save_invoice_endpoint(data: dict):
                 estado    = "NUEVO"
                 categoria_line = line.get("categoria", "") or ""
                 sku_int = generate_sku(sb, categoria_line)
-                res = sb.table("productos").upsert({
+
+                # Limpiar SKU temporal antes de guardar.
+                # Un SKU tipo "L001" lo asignamos nosotros cuando el proveedor no manda
+                # código real. Si lo guardamos en la BD, futuras facturas del mismo
+                # proveedor harán match falso contra productos completamente distintos.
+                sku_guardar = line.get("sku_proveedor", "") or ""
+                if _es_sku_temporal(sku_guardar):
+                    sku_guardar = ""
+
+                producto_payload = {
                     "proveedor_id":           proveedor_id,
-                    "sku_proveedor":          line.get("sku_proveedor", ""),
+                    "sku_proveedor":          sku_guardar,
                     "sku_interno":            sku_int,
                     "nombre_factura":         line.get("nombre_factura", ""),
                     "nombre_punto_rojo":      line.get("nombre_punto_rojo") or line.get("nombre_factura", ""),
@@ -883,7 +900,20 @@ async def save_invoice_endpoint(data: dict):
                     "precio_es_por":          precio_es_por_s,
                     "unidades_por_millar":    upm_s,
                     "iva_porcentaje":         iva_pct_l,
-                }, on_conflict="proveedor_id,sku_proveedor,nombre_factura").execute()
+                }
+
+                # Si el SKU es real (no vacío), usar upsert con conflict para actualizar
+                # si ya existe ese SKU+proveedor+nombre. Si el SKU es vacío (proveedor sin
+                # código), usar insert puro para evitar colisiones entre productos distintos
+                # del mismo proveedor que comparten sku_proveedor="" y nombre_factura similar.
+                if sku_guardar:
+                    res = sb.table("productos").upsert(
+                        producto_payload,
+                        on_conflict="proveedor_id,sku_proveedor,nombre_factura"
+                    ).execute()
+                else:
+                    res = sb.table("productos").insert(producto_payload).execute()
+
                 prod_id = res.data[0]["id"]
 
             # Historial de costos
@@ -1529,7 +1559,7 @@ async def extract_lista(file: UploadFile = File(...)):
 async def get_config(clave: str):
     try:
         sb  = get_supabase()
-        res = sb.table("config_admin").select("valor").eq("clave", clave).single().execute()
+        res = sb.table("config_admin").select("valor").eq("clave", clave).maybe_single().execute()
         return {"valor": res.data.get("valor", "") if res.data else ""}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
