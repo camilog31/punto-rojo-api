@@ -706,7 +706,7 @@ def recalcular_retefuente_grupo(supabase: Client, proveedor: str, fecha_factura:
                 ).eq("id", f["id"]).maybe_single().execute()
                 if valor_pagar_query.data:
                     vd = valor_pagar_query.data
-                    nuevo_valor = float(vd.get("subtotal") or 0) + float(vd.get("iva") or 0) - float(vd.get("valor_descuento") or 0) - rete_f
+                    nuevo_valor = max(0.0, float(vd.get("subtotal") or 0) + float(vd.get("iva") or 0) - float(vd.get("valor_descuento") or 0) - rete_f)
                     supabase.table("facturas_contables").update({
                         "retefuente": rete_f,
                         "valor_a_pagar": nuevo_valor
@@ -719,7 +719,7 @@ def recalcular_retefuente_grupo(supabase: Client, proveedor: str, fecha_factura:
                     ).eq("id", f["id"]).maybe_single().execute()
                     if valor_pagar_query.data:
                         vd = valor_pagar_query.data
-                        nuevo_valor = float(vd.get("subtotal") or 0) + float(vd.get("iva") or 0) - float(vd.get("valor_descuento") or 0)
+                        nuevo_valor = max(0.0, float(vd.get("subtotal") or 0) + float(vd.get("iva") or 0) - float(vd.get("valor_descuento") or 0))
                         supabase.table("facturas_contables").update({
                             "retefuente": 0,
                             "valor_a_pagar": nuevo_valor
@@ -1193,27 +1193,31 @@ async def parse_credit_note_endpoint(file: UploadFile = File(...)):
                     break
 
         factura_contable_id = None
+        factura_contable_advertencia = None
         try:
             sb = get_supabase()
             if factura_original:
                 r = sb.table("facturas_contables").select("id,subtotal,iva,retefuente,valor_a_pagar,proveedor").eq("numero_factura", factura_original).limit(1).execute()
                 if r.data:
                     factura_contable_id = r.data[0]["id"]
-        except Exception:
-            pass
+                else:
+                    factura_contable_advertencia = f"No se encontró la factura '{factura_original}' en contabilidad. Verifica el número antes de guardar."
+        except Exception as e:
+            factura_contable_advertencia = f"Error al buscar factura contable: {str(e)}"
 
         return {
-            "proveedor":           supplier,
-            "proveedor_nit":       nit,
-            "numero_nota":         numero_nota,
-            "fecha_nota":          fecha_nota,
-            "factura_original":    factura_original,
-            "factura_contable_id": factura_contable_id,
-            "subtotal":            money(subtotal),
-            "iva":                 money(iva),
-            "retefuente":          money(retefuente),
-            "total":               money(total),
-            "motivo":              motivo,
+            "proveedor":                    supplier,
+            "proveedor_nit":                nit,
+            "numero_nota":                  numero_nota,
+            "fecha_nota":                   fecha_nota,
+            "factura_original":             factura_original,
+            "factura_contable_id":          factura_contable_id,
+            "factura_contable_advertencia": factura_contable_advertencia,
+            "subtotal":                     money(subtotal),
+            "iva":                          money(iva),
+            "retefuente":                   money(retefuente),
+            "total":                        money(total),
+            "motivo":                       motivo,
         }
 
     except Exception as e:
@@ -2217,7 +2221,7 @@ async def sincronizar_forma_pago(data: dict):
                     iva         = float(f.get("iva") or 0)
                     retefuente  = float(f.get("retefuente") or 0)
                     valor_desc  = round(subtotal * desc / 100, 2)
-                    valor_pagar = subtotal + iva - valor_desc - retefuente
+                    valor_pagar = max(0.0, subtotal + iva - valor_desc - retefuente)
                     sb.table("facturas_contables").update({
                         "descuento_pct":   desc,
                         "valor_descuento": valor_desc,
@@ -2236,7 +2240,7 @@ async def sincronizar_forma_pago(data: dict):
                         iva        = float(f.get("iva") or 0)
                         valor_desc = float(f.get("valor_descuento") or 0)
                         rete_f     = round(subtotal * pct_rete / 100, 2) if aplica else 0.0
-                        valor_pagar = subtotal + iva - valor_desc - rete_f
+                        valor_pagar = max(0.0, subtotal + iva - valor_desc - rete_f)
                         sb.table("facturas_contables").update({
                             "aplica_retefuente": aplica_retefuente,
                             "retefuente":        rete_f,
