@@ -1041,6 +1041,39 @@ async def save_invoice_endpoint(data: dict):
                 }).execute()
                 if nuevo_pc.data:
                     pc_id = nuevo_pc.data[0]["id"]
+            except Exception as e_insert:
+                # El insert puede fallar por conflict de NIT duplicado u otro error.
+                # Intentamos buscar si ya existe con ese NIT o nombre antes de rendirse.
+                try:
+                    busqueda = None
+                    if nit:
+                        busqueda = sb.table("proveedores_contables").select("id").eq("nit", nit).maybe_single().execute()
+                    if not busqueda or not busqueda.data:
+                        busqueda = sb.table("proveedores_contables").select("id").ilike("proveedor_nombre", nombre).maybe_single().execute()
+                    if busqueda and busqueda.data:
+                        pc_id = busqueda.data["id"]
+                    else:
+                        # Último intento: upsert por NIT
+                        raise Exception(f"No se pudo crear proveedor contable: {str(e_insert)}")
+                except Exception:
+                    pass  # El proveedor no quedó en contables — se detectará en la próxima verificación
+
+        # Verificación final: si después de todo el proveedor no existe en contables, crearlo
+        if not pc_id and nombre:
+            try:
+                verificar = sb.table("proveedores_contables").select("id").ilike("proveedor_nombre", nombre).maybe_single().execute()
+                if not verificar or not verificar.data:
+                    fallback = sb.table("proveedores_contables").insert({
+                        "proveedor_nombre": nombre,
+                        "nit": nit or "",
+                        "forma_pago": "CONTADO",
+                        "aplica_retefuente": "NO",
+                        "descuento_pct": 0,
+                        "regimen": "COMUN",
+                        "descuento_afecta_costo": False,
+                    }).execute()
+                    if fallback.data:
+                        pc_id = fallback.data[0]["id"]
             except Exception:
                 pass
         desc_pct   = float(prov_info.get("descuento_pct") or 0)
