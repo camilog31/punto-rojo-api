@@ -1429,6 +1429,7 @@ async def crear_producto_derivado(data: dict):
 
         nombre        = (data.get("nombre") or "").strip()
         categoria     = (data.get("categoria") or "").strip()
+        subcategoria  = (data.get("subcategoria") or "").strip()
         if not nombre:
             raise HTTPException(status_code=400, detail="El nombre es obligatorio")
 
@@ -1467,6 +1468,7 @@ async def crear_producto_derivado(data: dict):
             "nombre_factura":          nombre,
             "nombre_punto_rojo":       nombre,
             "categoria":               categoria,
+            "subcategoria":            subcategoria,
             "presentacion_facturada":  data.get("presentacion") or "Unidad",
             "precio_es_por":           "",
             "unidades_por_paquete":    up,
