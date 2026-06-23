@@ -394,8 +394,11 @@ def inferir_precio_es_por(precio: float, up: int, pc: int, uc: int) -> str:
 
 def sale_price(costo: float, markup: float, transporte: float = 0.0) -> float:
     costo_total = (costo + transporte) * (1 + IVA_DEFAULT / 100)
-    m = max(0.0, min(float(markup or 0) / 100.0, 0.95))
-    return money(costo_total / (1 - m))
+    m = float(markup or 0)
+    if m >= 100:
+        return money(costo_total * (m / 100))
+    m_frac = max(0.0, m / 100.0)
+    return money(costo_total / (1 - m_frac))
 
 def add_calcs(lines: list, iva_mode: str) -> list:
     result = []
@@ -870,6 +873,7 @@ async def save_invoice_endpoint(data: dict):
                     "nombre_factura":         line.get("nombre_factura", ""),
                     "nombre_punto_rojo":      line.get("nombre_punto_rojo") or line.get("nombre_factura", ""),
                     "categoria":              line.get("categoria", ""),
+                    "subcategoria":           line.get("subcategoria", "") or "",
                     "presentacion_facturada": line.get("presentacion_facturada", "Unidad"),
                     "unidades_por_paquete":   up,
                     "paquetes_por_caja":      pc,
