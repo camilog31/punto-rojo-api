@@ -7,7 +7,8 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, date
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from supabase import create_client, Client
@@ -18,9 +19,11 @@ load_dotenv()
 
 app = FastAPI(title="Punto Rojo API", version="1.0.0")
 
+FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "https://costos-punto-rojo-app.vercel.app")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[FRONTEND_ORIGIN, "http://localhost:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -29,9 +32,37 @@ app.add_middleware(
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
 IVA_DEFAULT  = 19.0
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB
+
+# ─── Endpoints públicos que no requieren sesión ───────────────────────────────
+PUBLIC_PATHS = {"/", "/catalogo", "/categorias"}
 
 def get_supabase() -> Client:
     return create_client(SUPABASE_URL, SUPABASE_KEY)
+
+def verify_session_token(token: str) -> bool:
+    """Verifica que el token sea una sesión activa en Supabase."""
+    if not token:
+        return False
+    try:
+        sb = get_supabase()
+        user = sb.auth.get_user(token)
+        return user is not None and user.user is not None
+    except Exception:
+        return False
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    path = request.url.path
+    # Permitir OPTIONS (preflight CORS) y rutas públicas sin token
+    if request.method == "OPTIONS" or path in PUBLIC_PATHS:
+        return await call_next(request)
+    # Verificar token en header Authorization: Bearer <token>
+    auth_header = request.headers.get("Authorization", "")
+    token = auth_header.replace("Bearer ", "").strip() if auth_header.startswith("Bearer ") else ""
+    if not verify_session_token(token):
+        return JSONResponse(status_code=401, content={"detail": "No autorizado"})
+    return await call_next(request)
 
 # ─── Helpers XML ────────────────────────────────────────────────────────────
 
@@ -548,6 +579,8 @@ async def parse_invoice_endpoint(
     iva_mode_override: Optional[str] = None,
 ):
     raw = await file.read()
+    if len(raw) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="Archivo demasiado grande. Máximo 10 MB.")
     filename = file.filename or ""
 
     pdf_base64 = ""
@@ -670,7 +703,7 @@ def recalcular_retefuente_grupo(supabase: Client, proveedor: str, fecha_factura:
                 rete_f = round(subtotal_f * pct_rete / 100, 2)
                 valor_pagar_query = supabase.table("facturas_contables").select(
                     "subtotal,iva,valor_descuento"
-                ).eq("id", f["id"]).single().execute()
+                ).eq("id", f["id"]).maybe_single().execute()
                 if valor_pagar_query.data:
                     vd = valor_pagar_query.data
                     nuevo_valor = float(vd.get("subtotal") or 0) + float(vd.get("iva") or 0) - float(vd.get("valor_descuento") or 0) - rete_f
@@ -683,7 +716,7 @@ def recalcular_retefuente_grupo(supabase: Client, proveedor: str, fecha_factura:
                 if float(f.get("retefuente") or 0) > 0:
                     valor_pagar_query = supabase.table("facturas_contables").select(
                         "subtotal,iva,valor_descuento"
-                    ).eq("id", f["id"]).single().execute()
+                    ).eq("id", f["id"]).maybe_single().execute()
                     if valor_pagar_query.data:
                         vd = valor_pagar_query.data
                         nuevo_valor = float(vd.get("subtotal") or 0) + float(vd.get("iva") or 0) - float(vd.get("valor_descuento") or 0)
@@ -815,7 +848,7 @@ async def save_invoice_endpoint(data: dict):
             cu, cp, cc = calc_costs(costo_final, pres_s, up, pc, precio_es_por_s, upm_s)
 
             if prod_id:
-                old = sb.table("productos").select("costo_unidad_sin_iva").eq("id", prod_id).single().execute()
+                old = sb.table("productos").select("costo_unidad_sin_iva").eq("id", prod_id).maybe_single().execute()
                 costo_ant = float(old.data.get("costo_unidad_sin_iva") or 0) if old.data else 0
                 variacion = round(((cu - costo_ant) / costo_ant * 100), 2) if costo_ant > 0 else 0
 
@@ -1055,6 +1088,8 @@ async def save_invoice_endpoint(data: dict):
 @app.post("/parse-credit-note")
 async def parse_credit_note_endpoint(file: UploadFile = File(...)):
     raw = await file.read()
+    if len(raw) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="Archivo demasiado grande. Máximo 10 MB.")
     filename = file.filename or ""
 
     try:
@@ -1163,7 +1198,7 @@ async def toggle_descuento(data: dict):
         prod = sb.table("productos").select(
             "precio_factura_base,precio_es_por,descuento_pct_factura,"
             "unidades_por_paquete,paquetes_por_caja,presentacion_facturada,iva_porcentaje,unidades_por_millar"
-        ).eq("id", prod_id).single().execute()
+        ).eq("id", prod_id).maybe_single().execute()
 
         if not prod.data:
             raise HTTPException(status_code=404, detail="Producto no encontrado")
@@ -1230,7 +1265,7 @@ async def recalc_precio_es_por(data: dict):
         prod = sb.table("productos").select(
             "precio_factura_base,descuento_pct_factura,descuento_aplicado,"
             "presentacion_facturada,unidades_por_paquete,paquetes_por_caja,iva_porcentaje,unidades_por_millar"
-        ).eq("id", prod_id).single().execute()
+        ).eq("id", prod_id).maybe_single().execute()
 
         if not prod.data:
             raise HTTPException(status_code=404, detail="Producto no encontrado")
@@ -1584,7 +1619,7 @@ async def enviar_reporte_mensual(data: dict):
         sb  = get_supabase()
         mes = data.get("mes", "")
 
-        cfg    = sb.table("config_admin").select("valor").eq("clave", "correo_reporte").single().execute()
+        cfg    = sb.table("config_admin").select("valor").eq("clave", "correo_reporte").maybe_single().execute()
         correo = cfg.data.get("valor", "") if cfg.data else ""
         if not correo:
             raise HTTPException(status_code=400, detail="No hay correo configurado en Admin")
@@ -1724,7 +1759,7 @@ async def enviar_reporte_costos(data: dict):
             raise HTTPException(status_code=400, detail="Se requiere una fecha")
 
         # Obtener correo configurado
-        cfg    = sb.table("config_admin").select("valor").eq("clave", "correo_reporte").single().execute()
+        cfg    = sb.table("config_admin").select("valor").eq("clave", "correo_reporte").maybe_single().execute()
         correo = cfg.data.get("valor", "") if cfg.data else ""
         if not correo:
             raise HTTPException(status_code=400, detail="No hay correo configurado en Admin")
@@ -1908,7 +1943,7 @@ async def enviar_reporte_costos(data: dict):
         # Obtener nota del reporte si existe
         nota_html = ""
         try:
-            rev = sb.table("reportes_revisados").select("notas,revisado_por").eq("fecha", fecha).single().execute()
+            rev = sb.table("reportes_revisados").select("notas,revisado_por").eq("fecha", fecha).maybe_single().execute()
             if rev.data and rev.data.get("notas"):
                 nota_html = f"""
                 <div style="background:white;border-radius:8px;padding:16px;margin-bottom:20px;border-left:3px solid #C41E2C;">
@@ -2023,7 +2058,7 @@ async def eliminar_factura(factura_id: int):
         sb = get_supabase()
 
         # 1. Obtener datos de la factura
-        fac = sb.table("facturas").select("id,numero_factura").eq("id", factura_id).single().execute()
+        fac = sb.table("facturas").select("id,numero_factura").eq("id", factura_id).maybe_single().execute()
         if not fac.data:
             raise HTTPException(status_code=404, detail="Factura no encontrada")
         numero_factura = fac.data["numero_factura"]
