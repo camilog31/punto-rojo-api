@@ -486,7 +486,7 @@ def find_similar_product(supabase: Client, proveedor_nit: str, sku: str, nombre:
         return {"match": "Nuevo", "producto": None}
     try:
         r = supabase.table("productos").select(
-            "id,sku_interno,sku_proveedor,nombre_punto_rojo,categoria,"
+            "id,sku_interno,sku_proveedor,nombre_punto_rojo,categoria,subcategoria,"
             "presentacion_facturada,precio_es_por,unidades_por_paquete,paquetes_por_caja,unidades_por_caja,"
             "costo_unidad_sin_iva,markup_unidad_pct,markup_paquete_pct,markup_caja_pct,"
             "markup_millar_pct,markup_kg_pct,markup_rollo_pct,markup_metro_pct,"
