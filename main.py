@@ -1019,10 +1019,8 @@ async def save_invoice_endpoint(data: dict):
         pc_id = prov_info.get("id")
         if pc_id and forma_pago_xml:
             try:
-                requiere_acuse = forma_pago == "CREDITO"
                 sb.table("proveedores_contables").update({
                     "forma_pago": forma_pago,
-                    "requiere_acuse": requiere_acuse,
                 }).eq("id", pc_id).execute()
             except Exception:
                 pass
@@ -1085,7 +1083,7 @@ async def save_invoice_endpoint(data: dict):
         aplica_rete    = prov_info.get("aplica_retefuente", "NO")
         retefuente     = estimar_retefuente(sb, prov_info, subtotal, invoice.get("fecha") or "", retefuente_xml)
 
-        valor_pagar = subtotal + iva_val - valor_desc - retefuente
+        valor_pagar = max(0.0, subtotal + iva_val - valor_desc - retefuente)
 
         marcar_acuse = bool(data.get("marcar_acuse", False))
 
