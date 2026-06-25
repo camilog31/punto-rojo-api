@@ -35,7 +35,7 @@ IVA_DEFAULT  = 19.0
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB
 
 # ─── Endpoints públicos que no requieren sesión ───────────────────────────────
-PUBLIC_PATHS = {"/", "/catalogo", "/categorias", "/subcategorias"}
+PUBLIC_PATHS = {"/", "/catalogo", "/categorias", "/subcategorias", "/todas-subcategorias"}
 
 def get_supabase() -> Client:
     return create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -1453,6 +1453,27 @@ async def listar_subcategorias(categoria: str = ""):
                 subcategorias.append(sub)
         subcategorias.sort(key=lambda s: s.upper())
         return {"ok": True, "subcategorias": subcategorias}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/todas-subcategorias")
+async def listar_todas_subcategorias():
+    """Devuelve todas las subcategorías agrupadas por categoría en una sola query."""
+    try:
+        sb = get_supabase()
+        r = sb.table("productos").select("categoria,subcategoria").eq("activo", True).execute()
+        mapa: dict = {}
+        for row in (r.data or []):
+            cat = (row.get("categoria") or "").strip()
+            sub = (row.get("subcategoria") or "").strip()
+            if cat and sub:
+                if cat not in mapa:
+                    mapa[cat] = set()
+                mapa[cat].add(sub)
+        # Convertir sets a listas ordenadas
+        resultado = {cat: sorted(list(subs)) for cat, subs in mapa.items()}
+        return {"ok": True, "subcategorias": resultado}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
