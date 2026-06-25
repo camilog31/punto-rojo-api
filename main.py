@@ -1375,18 +1375,34 @@ async def listar_materias_primas():
 
 @app.get("/categorias")
 async def listar_categorias():
-    """Lista categorías únicas ya usadas en productos, para el dropdown del preview de factura."""
+    """Lista categorías únicas ordenadas por categorias_orden.orden, luego alfabético."""
     try:
         sb = get_supabase()
+        # Obtener categorías de productos
         r = sb.table("productos").select("categoria").eq("activo", True).execute()
-        vistas = set()
-        categorias = []
+        cats_productos = set()
         for row in (r.data or []):
             cat = (row.get("categoria") or "").strip()
-            if cat and cat.upper() not in vistas:
-                vistas.add(cat.upper())
-                categorias.append(cat)
-        categorias.sort(key=lambda c: c.upper())
+            if cat:
+                cats_productos.add(cat)
+
+        # Obtener orden guardado
+        orden_r = sb.table("categorias_orden").select("nombre,orden").execute()
+        orden_map = {row["nombre"]: row["orden"] for row in (orden_r.data or [])}
+
+        # Registrar categorías nuevas que no están en categorias_orden
+        nuevas = [c for c in cats_productos if c not in orden_map]
+        if nuevas:
+            max_orden = max(orden_map.values(), default=0)
+            for i, nueva in enumerate(sorted(nuevas), 1):
+                try:
+                    sb.table("categorias_orden").insert({"nombre": nueva, "orden": max_orden + i * 10}).execute()
+                    orden_map[nueva] = max_orden + i * 10
+                except Exception:
+                    pass
+
+        # Ordenar por orden guardado, luego alfabético para empates
+        categorias = sorted(cats_productos, key=lambda c: (orden_map.get(c, 9999), c.upper()))
         return {"ok": True, "categorias": categorias}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1410,6 +1426,22 @@ async def listar_subcategorias(categoria: str = ""):
                 subcategorias.append(sub)
         subcategorias.sort(key=lambda s: s.upper())
         return {"ok": True, "subcategorias": subcategorias}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/categorias-orden")
+async def guardar_orden_categorias(data: dict):
+    """Guarda el orden de categorías después del drag & drop. Recibe {orden: ['CAT1','CAT2',...]}"""
+    try:
+        sb = get_supabase()
+        categorias_ordenadas: list = data.get("orden", [])
+        for i, nombre in enumerate(categorias_ordenadas):
+            sb.table("categorias_orden").upsert(
+                {"nombre": nombre, "orden": (i + 1) * 10},
+                on_conflict="nombre"
+            ).execute()
+        return {"ok": True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
