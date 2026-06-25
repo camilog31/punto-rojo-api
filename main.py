@@ -753,6 +753,24 @@ def generate_sku(supabase: Client, categoria: str) -> str:
     return f"{prefix}-{str(max_num + 1).zfill(4)}"
 
 
+def registrar_auditoria(sb, accion: str, entidad: str, entidad_id: str = "", descripcion: str = "",
+                        usuario_email: str = "", usuario_nombre: str = "", datos_anteriores: dict = None, datos_nuevos: dict = None):
+    """Registra una acción en la tabla de auditoría. Falla silenciosamente para no bloquear el flujo principal."""
+    try:
+        sb.table("auditoria").insert({
+            "accion":           accion,
+            "entidad":          entidad,
+            "entidad_id":       str(entidad_id),
+            "descripcion":      descripcion,
+            "usuario_email":    usuario_email,
+            "usuario_nombre":   usuario_nombre,
+            "datos_anteriores": datos_anteriores,
+            "datos_nuevos":     datos_nuevos,
+        }).execute()
+    except Exception:
+        pass
+
+
 @app.post("/save-invoice")
 async def save_invoice_endpoint(data: dict):
     try:
@@ -1109,6 +1127,15 @@ async def save_invoice_endpoint(data: dict):
 
         if not retefuente_xml:
             recalcular_retefuente_grupo(sb, nombre, invoice.get("fecha", ""), aplica_rete)
+
+        # Registrar auditoría
+        usuario_email  = data.get("usuario_email", "")
+        usuario_nombre = data.get("usuario_nombre", "")
+        registrar_auditoria(sb,
+            accion="GUARDAR_FACTURA", entidad="facturas", entidad_id=str(factura_id),
+            descripcion=f"Factura {invoice.get('numero_factura')} de {nombre} — ${subtotal:,.0f}",
+            usuario_email=usuario_email, usuario_nombre=usuario_nombre,
+        )
 
         return {"ok": True, "factura_id": factura_id, "mensaje": f"Factura {invoice.get('numero_factura')} guardada correctamente."}
 
@@ -2144,7 +2171,7 @@ async def marcar_revisado_factura(data: dict):
 # ─── Eliminar factura ────────────────────────────────────────────────────────
 
 @app.delete("/eliminar-factura/{factura_id}")
-async def eliminar_factura(factura_id: int):
+async def eliminar_factura(factura_id: int, request: Request):
     try:
         sb = get_supabase()
 
@@ -2207,6 +2234,15 @@ async def eliminar_factura(factura_id: int):
 
         # 8. Borrar la factura principal
         sb.table("facturas").delete().eq("id", factura_id).execute()
+
+        # Registrar auditoría
+        usuario_email  = request.headers.get("X-Usuario-Email", "")
+        usuario_nombre = request.headers.get("X-Usuario-Nombre", "")
+        registrar_auditoria(sb,
+            accion="ELIMINAR_FACTURA", entidad="facturas", entidad_id=str(factura_id),
+            descripcion=f"Factura {numero_factura} eliminada — {len(prod_ids)} productos afectados",
+            usuario_email=usuario_email, usuario_nombre=usuario_nombre,
+        )
 
         return {
             "ok": True,
@@ -2307,6 +2343,26 @@ async def sincronizar_forma_pago(data: dict):
         return {"ok": True, "proveedor": proveedor_nombre, "nombres_match": nombres_match}
     except HTTPException:
         raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/registrar-auditoria")
+async def registrar_auditoria_endpoint(data: dict):
+    """Endpoint para que el frontend registre acciones de auditoría."""
+    try:
+        sb = get_supabase()
+        registrar_auditoria(sb,
+            accion=data.get("accion", ""),
+            entidad=data.get("entidad", ""),
+            entidad_id=data.get("entidad_id", ""),
+            descripcion=data.get("descripcion", ""),
+            usuario_email=data.get("usuario_email", ""),
+            usuario_nombre=data.get("usuario_nombre", ""),
+            datos_anteriores=data.get("datos_anteriores"),
+            datos_nuevos=data.get("datos_nuevos"),
+        )
+        return {"ok": True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
