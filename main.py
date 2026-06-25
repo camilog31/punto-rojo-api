@@ -35,7 +35,7 @@ IVA_DEFAULT  = 19.0
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB
 
 # ─── Endpoints públicos que no requieren sesión ───────────────────────────────
-PUBLIC_PATHS = {"/", "/catalogo", "/categorias"}
+PUBLIC_PATHS = {"/", "/catalogo", "/categorias", "/subcategorias"}
 
 def get_supabase() -> Client:
     return create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -1388,6 +1388,28 @@ async def listar_categorias():
                 categorias.append(cat)
         categorias.sort(key=lambda c: c.upper())
         return {"ok": True, "categorias": categorias}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/subcategorias")
+async def listar_subcategorias(categoria: str = ""):
+    """Lista subcategorías únicas de una categoría específica."""
+    try:
+        sb = get_supabase()
+        q = sb.table("productos").select("subcategoria").eq("activo", True)
+        if categoria:
+            q = q.eq("categoria", categoria)
+        r = q.execute()
+        vistas = set()
+        subcategorias = []
+        for row in (r.data or []):
+            sub = (row.get("subcategoria") or "").strip()
+            if sub and sub.upper() not in vistas:
+                vistas.add(sub.upper())
+                subcategorias.append(sub)
+        subcategorias.sort(key=lambda s: s.upper())
+        return {"ok": True, "subcategorias": subcategorias}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
