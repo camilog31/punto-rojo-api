@@ -1771,6 +1771,7 @@ async def enviar_reporte_mensual(data: dict):
         ventas              = float(data.get("ventas", 0))
         iva_ventas          = float(data.get("iva_ventas", 0))
         iva_arriendos       = float(data.get("iva_arriendos", 0))
+        rete_arriendos      = float(data.get("rete_arriendos", 0))
         iva_neto            = float(data.get("iva_neto", 0))
         facturas_pagadas    = int(data.get("facturas_pagadas", 0))
         facturas_pendientes = int(data.get("facturas_pendientes", 0))
@@ -1811,6 +1812,7 @@ async def enviar_reporte_mensual(data: dict):
             <table width="100%" cellpadding="6" style="font-size:14px;border-collapse:collapse;">
               <tr><td style="color:#444;">Total gastos</td><td align="right" style="font-weight:bold;">{fmt(total_arriendos)}</td></tr>
               <tr><td style="color:#444;">IVA gastos</td><td align="right" style="color:#ef4444;">{fmt(iva_arriendos)}</td></tr>
+              {f'<tr><td style="color:#444;">Retefuente gastos</td><td align="right" style="color:#ef4444;">{fmt(rete_arriendos)}</td></tr>' if rete_arriendos > 0 else ''}
             </table>
           </div>
 
