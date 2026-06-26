@@ -1772,6 +1772,7 @@ async def enviar_reporte_mensual(data: dict):
         iva_ventas          = float(data.get("iva_ventas", 0))
         iva_arriendos       = float(data.get("iva_arriendos", 0))
         rete_arriendos      = float(data.get("rete_arriendos", 0))
+        rete_total          = float(data.get("rete_total", total_rete + rete_arriendos))
         iva_neto            = float(data.get("iva_neto", 0))
         facturas_pagadas    = int(data.get("facturas_pagadas", 0))
         facturas_pendientes = int(data.get("facturas_pendientes", 0))
@@ -1802,7 +1803,9 @@ async def enviar_reporte_mensual(data: dict):
             <table width="100%" cellpadding="6" style="font-size:14px;border-collapse:collapse;">
               <tr><td style="color:#444;">Total compras (subtotal)</td><td align="right" style="font-weight:bold;">{fmt(total_compras)}</td></tr>
               <tr><td style="color:#444;">IVA descontable</td><td align="right" style="color:#ef4444;">{fmt(total_iva_compras)}</td></tr>
-              <tr><td style="color:#444;">Retefuente</td><td align="right" style="color:#ef4444;">{fmt(total_rete)}</td></tr>
+              <tr><td style="color:#444;">Retefuente facturas</td><td align="right" style="color:#ef4444;">{fmt(total_rete)}</td></tr>
+              {f'<tr><td style="color:#444;">Retefuente gastos</td><td align="right" style="color:#ef4444;">{fmt(rete_arriendos)}</td></tr>' if rete_arriendos > 0 else ''}
+              <tr style="border-top:1px solid #eee;"><td style="color:#111;font-weight:bold;padding-top:8px;">Retefuente total</td><td align="right" style="font-weight:bold;color:#ef4444;padding-top:8px;">{fmt(rete_total)}</td></tr>
               {f'<tr><td style="color:#444;">Descuentos proveedores</td><td align="right" style="color:#22c55e;">- {fmt(total_descuentos)}</td></tr>' if total_descuentos > 0 else ''}
             </table>
           </div>
