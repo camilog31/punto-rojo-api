@@ -197,6 +197,23 @@ def parse_invoice(root: ET.Element) -> dict:
     iva      = money(total - subtotal) if subtotal and total and total >= subtotal else 0.0
 
     lines = []
+    # Primero recolectar todos los SKUs para detectar duplicados
+    all_skus_raw = []
+    for line in all_descendants(root, "InvoiceLine"):
+        def _id_valido(txt):
+            txt = (txt or "").strip()
+            return txt if txt and txt != "0" else ""
+        raw_sku = (
+            _id_valido(first_text(line, ["Item","StandardItemIdentification","ID"])) or
+            _id_valido(first_text(line, ["Item","SellersItemIdentification","ID"])) or
+            ""
+        )
+        all_skus_raw.append(raw_sku)
+    # SKUs que aparecen en más de una línea son inútiles (proveedor los usa como placeholder)
+    from collections import Counter
+    sku_counts = Counter(s for s in all_skus_raw if s)
+    skus_duplicados = {s for s, c in sku_counts.items() if c > 1}
+
     for i, line in enumerate(all_descendants(root, "InvoiceLine"), start=1):
         qty      = parse_decimal(first_text(line, ["InvoicedQuantity"]), 1) or 1
         desc     = first_text(line, ["Item","Description"]) or first_text(line, ["Item","Name"]) or ""
@@ -205,11 +222,16 @@ def parse_invoice(root: ET.Element) -> dict:
             txt = (txt or "").strip()
             return txt if txt and txt != "0" else ""
 
-        sku = (
+        raw_sku = (
             _id_valido(first_text(line, ["Item","StandardItemIdentification","ID"])) or
             _id_valido(first_text(line, ["Item","SellersItemIdentification","ID"])) or
-            f"L{i:03d}"
+            ""
         )
+        # Si el SKU está duplicado en varias líneas, es un placeholder inútil → temporal
+        if raw_sku and raw_sku not in skus_duplicados:
+            sku = raw_sku
+        else:
+            sku = f"L{i:03d}"
         price    = parse_decimal(first_text(line, ["Price","PriceAmount"]))
         line_ext = parse_decimal(first_text(line, ["LineExtensionAmount"]))
 
