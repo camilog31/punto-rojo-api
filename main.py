@@ -2414,6 +2414,112 @@ async def registrar_auditoria_endpoint(data: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ─── Notificación de stock bajo ──────────────────────────────────────────────
+
+@app.post("/notificacion-stock-bajo")
+async def notificacion_stock_bajo(data: dict):
+    """Revisa productos bajo el mínimo y manda un correo de alerta."""
+    try:
+        import resend
+        sb = get_supabase()
+
+        # 1. Traer todos los registros de stock con mínimo definido
+        stock_res = sb.table("inv_stock").select("*").gt("stock_minimo", 0).execute()
+        stock_rows = stock_res.data or []
+
+        # 2. Filtrar los que están bajo el mínimo
+        bajo_minimo = [s for s in stock_rows if (s.get("cantidad") or 0) < (s.get("stock_minimo") or 0)]
+
+        if not bajo_minimo:
+            return {"ok": True, "enviado": False, "mensaje": "No hay productos bajo el mínimo"}
+
+        # 3. Obtener nombres de productos y bodegas
+        app_ids    = list({s["producto_app_id"] for s in bajo_minimo if s.get("producto_app_id")})
+        inv_ids    = list({s["inv_producto_id"]  for s in bajo_minimo if s.get("inv_producto_id")})
+        bodega_ids = list({s["bodega_id"]         for s in bajo_minimo if s.get("bodega_id")})
+
+        prods_app = (sb.table("productos").select("id,nombre_punto_rojo,sku_interno").in_("id", app_ids).execute().data or []) if app_ids else []
+        prods_inv = (sb.table("inv_productos").select("id,nombre,sku").in_("id", inv_ids).execute().data or []) if inv_ids else []
+        bodegas   = (sb.table("inv_bodegas").select("id,nombre").in_("id", bodega_ids).execute().data or []) if bodega_ids else []
+
+        prod_app_map = {p["id"]: p for p in prods_app}
+        prod_inv_map = {p["id"]: p for p in prods_inv}
+        bodega_map   = {b["id"]: b["nombre"] for b in bodegas}
+
+        # 4. Construir filas del correo
+        filas_html = ""
+        for s in bajo_minimo:
+            if s.get("producto_app_id"):
+                prod   = prod_app_map.get(s["producto_app_id"], {})
+                nombre = prod.get("nombre_punto_rojo") or "—"
+                sku    = prod.get("sku_interno") or "—"
+            else:
+                prod   = prod_inv_map.get(s["inv_producto_id"], {})
+                nombre = prod.get("nombre") or "—"
+                sku    = prod.get("sku") or "—"
+
+            bodega   = bodega_map.get(s["bodega_id"], "—")
+            cantidad = s.get("cantidad") or 0
+            minimo   = s.get("stock_minimo") or 0
+            faltante = max(0, minimo - cantidad)
+            unidad   = s.get("unidad_manejo") or ""
+
+            filas_html += f"""
+            <tr style="border-bottom:1px solid #f0f0f0;">
+              <td style="padding:10px 12px;color:#111;font-size:13px;">{nombre}</td>
+              <td style="padding:10px 12px;color:#888;font-size:12px;font-family:monospace;">{sku}</td>
+              <td style="padding:10px 12px;color:#444;font-size:13px;">{bodega}</td>
+              <td style="padding:10px 12px;color:#ef4444;font-weight:bold;font-size:13px;">{cantidad} {unidad}</td>
+              <td style="padding:10px 12px;color:#888;font-size:13px;">{minimo} {unidad}</td>
+              <td style="padding:10px 12px;color:#f59e0b;font-weight:bold;font-size:13px;">Faltan {faltante}</td>
+            </tr>"""
+
+        fecha_hoy = datetime.now().strftime("%d/%m/%Y %H:%M")
+        html = f"""
+        <div style="font-family:sans-serif;max-width:700px;margin:0 auto;background:#f4f4f5;padding:32px;border-radius:12px;">
+          <div style="background:#C41E2C;padding:20px 24px;border-radius:8px;margin-bottom:24px;">
+            <h1 style="color:white;margin:0;font-size:20px;">⚠️ Alerta de Stock Bajo</h1>
+            <p style="color:rgba(255,255,255,0.7);margin:6px 0 0;font-size:13px;">Punto Rojo — {fecha_hoy}</p>
+          </div>
+          <div style="background:white;border-radius:8px;padding:20px;margin-bottom:16px;">
+            <p style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:1px;margin:0 0 14px;font-weight:600;">
+              {len(bajo_minimo)} producto(s) bajo el mínimo
+            </p>
+            <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+              <thead>
+                <tr style="background:#f8f8f8;border-bottom:2px solid #eee;">
+                  <th style="padding:10px 12px;text-align:left;font-size:11px;color:#888;text-transform:uppercase;font-weight:600;">Producto</th>
+                  <th style="padding:10px 12px;text-align:left;font-size:11px;color:#888;text-transform:uppercase;font-weight:600;">SKU</th>
+                  <th style="padding:10px 12px;text-align:left;font-size:11px;color:#888;text-transform:uppercase;font-weight:600;">Bodega</th>
+                  <th style="padding:10px 12px;text-align:left;font-size:11px;color:#888;text-transform:uppercase;font-weight:600;">Stock actual</th>
+                  <th style="padding:10px 12px;text-align:left;font-size:11px;color:#888;text-transform:uppercase;font-weight:600;">Mínimo</th>
+                  <th style="padding:10px 12px;text-align:left;font-size:11px;color:#888;text-transform:uppercase;font-weight:600;">Diferencia</th>
+                </tr>
+              </thead>
+              <tbody>{filas_html}</tbody>
+            </table>
+          </div>
+          <p style="text-align:center;color:#aaa;font-size:11px;margin:0;">Generado desde Costos Punto Rojo · Inventario</p>
+        </div>
+        """
+
+        # 5. Enviar correo
+        resend.api_key = os.getenv("RESEND_API_KEY", "")
+        resend.Emails.send({
+            "from":    "Punto Rojo <onboarding@resend.dev>",
+            "to":      ["juan.kamilo05@hotmail.com"],
+            "subject": f"⚠️ Stock bajo — {len(bajo_minimo)} producto(s) — Punto Rojo",
+            "html":    html,
+        })
+
+        return {"ok": True, "enviado": True, "productos": len(bajo_minimo)}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
