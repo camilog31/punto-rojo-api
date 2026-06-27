@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from supabase import create_client, Client
 from dotenv import load_dotenv
-import resend
+from collections import Counter
 
 load_dotenv()
 
@@ -210,7 +210,6 @@ def parse_invoice(root: ET.Element) -> dict:
         )
         all_skus_raw.append(raw_sku)
     # SKUs que aparecen en más de una línea son inútiles (proveedor los usa como placeholder)
-    from collections import Counter
     sku_counts = Counter(s for s in all_skus_raw if s)
     skus_duplicados = {s for s, c in sku_counts.items() if c > 1}
 
