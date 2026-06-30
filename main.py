@@ -37,19 +37,53 @@ MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB
 # ─── Endpoints públicos que no requieren sesión ───────────────────────────────
 PUBLIC_PATHS = {"/", "/catalogo", "/categorias", "/subcategorias", "/todas-subcategorias"}
 
+# ─── Endpoints destructivos/sensibles que requieren rol admin ─────────────────
+# Estos endpoints solo deben poder ejecutarse si el usuario autenticado tiene
+# rol "admin" en user_profiles. El frontend ya oculta los botones a usuarios
+# sin permiso, pero esto evita que alguien llame la API directamente (ej. con
+# Postman o las herramientas de desarrollador) usando un token válido de un
+# rol distinto a admin.
+ADMIN_ONLY_PATHS = {
+    "/limpiar-tablas",
+    "/config-admin",
+}
+
+# Endpoints que requieren admin O contabilidad (igual que el resto de la app,
+# donde contabilidad tiene permisos casi iguales a admin salvo Admin general)
+ADMIN_OR_CONTABILIDAD_PREFIXES = (
+    "/eliminar-factura/",
+)
+
 def get_supabase() -> Client:
     return create_client(SUPABASE_URL, SUPABASE_KEY)
 
-def verify_session_token(token: str) -> bool:
-    """Verifica que el token sea una sesión activa en Supabase."""
+def get_user_from_token(token: str):
+    """Devuelve el objeto user de Supabase si el token es una sesión activa, o None."""
     if not token:
-        return False
+        return None
     try:
         sb = get_supabase()
-        user = sb.auth.get_user(token)
-        return user is not None and user.user is not None
+        result = sb.auth.get_user(token)
+        if result is not None and result.user is not None:
+            return result.user
     except Exception:
-        return False
+        pass
+    return None
+
+def verify_session_token(token: str) -> bool:
+    """Verifica que el token sea una sesión activa en Supabase."""
+    return get_user_from_token(token) is not None
+
+def get_user_rol(email: str) -> str:
+    """Consulta user_profiles y devuelve el rol del usuario, o '' si no existe."""
+    if not email:
+        return ""
+    try:
+        sb = get_supabase()
+        res = sb.table("user_profiles").select("rol").eq("email", email).maybe_single().execute()
+        return (res.data.get("rol") or "") if res.data else ""
+    except Exception:
+        return ""
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
@@ -60,8 +94,20 @@ async def auth_middleware(request: Request, call_next):
     # Verificar token en header Authorization: Bearer <token>
     auth_header = request.headers.get("Authorization", "")
     token = auth_header.replace("Bearer ", "").strip() if auth_header.startswith("Bearer ") else ""
-    if not verify_session_token(token):
+    user = get_user_from_token(token)
+    if user is None:
         return JSONResponse(status_code=401, content={"detail": "No autorizado"})
+
+    requiere_solo_admin = path in ADMIN_ONLY_PATHS
+    requiere_admin_o_contabilidad = any(path.startswith(p) for p in ADMIN_OR_CONTABILIDAD_PREFIXES)
+
+    if requiere_solo_admin or requiere_admin_o_contabilidad:
+        email = (user.email or "").lower()
+        rol = get_user_rol(email)
+        roles_permitidos = {"admin"} if requiere_solo_admin else {"admin", "contabilidad"}
+        if rol not in roles_permitidos:
+            return JSONResponse(status_code=403, content={"detail": "Esta acción requiere permisos de administrador"})
+
     return await call_next(request)
 
 # ─── Helpers XML ────────────────────────────────────────────────────────────
