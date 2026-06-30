@@ -1521,18 +1521,50 @@ async def subir_imagen_producto(
     file: UploadFile = File(...),
 ):
     """Sube la imagen de un producto a Storage usando la service key (evita
-    problemas de RLS/sesión en el navegador) y devuelve la URL pública."""
+    problemas de RLS/sesión en el navegador) y devuelve la URL pública.
+
+    Siempre se comprime y convierte a JPG con un nombre fijo (principal.jpg)
+    para que el upsert reemplace correctamente la imagen anterior en vez de
+    crear archivos duplicados con distinta extensión (bug detectado: subir
+    una imagen como .png y luego como .jpg generaba dos archivos separados,
+    desperdiciando espacio en Supabase Storage)."""
     try:
+        import PIL.Image
         sb = get_supabase()
         raw = await file.read()
-        ext = (file.filename or "imagen.jpg").rsplit(".", 1)[-1].lower()
-        if ext not in ("jpg", "jpeg", "png", "webp", "gif"):
-            ext = "jpg"
+
+        # Abrir con PIL, convertir a RGB (por si viene PNG con transparencia) y redimensionar
+        img = PIL.Image.open(io.BytesIO(raw))
+        if img.mode in ("RGBA", "P", "LA"):
+            fondo = PIL.Image.new("RGB", img.size, (255, 255, 255))
+            img = img.convert("RGBA")
+            fondo.paste(img, mask=img.split()[-1])
+            img = fondo
+        elif img.mode != "RGB":
+            img = img.convert("RGB")
+
+        MAX_ANCHO = 1200
+        if img.width > MAX_ANCHO:
+            ratio = MAX_ANCHO / img.width
+            nuevo_alto = int(img.height * ratio)
+            img = img.resize((MAX_ANCHO, nuevo_alto), PIL.Image.LANCZOS)
+
+        buffer = io.BytesIO()
+        img.save(buffer, format="JPEG", quality=85, optimize=True)
+        data_final = buffer.getvalue()
+
         sku_safe = re.sub(r"[^A-Za-z0-9_-]", "_", sku_interno)
-        path = f"{sku_safe}/principal.{ext}"
+        path = f"{sku_safe}/principal.jpg"
+
+        # Eliminar cualquier versión previa con otra extensión (residuos de subidas anteriores al fix)
+        for ext_vieja in ("png", "webp", "gif", "jpeg"):
+            try:
+                sb.storage.from_("Productos").remove([f"{sku_safe}/principal.{ext_vieja}"])
+            except Exception:
+                pass
 
         sb.storage.from_("Productos").upload(
-            path, raw, {"content-type": file.content_type or "image/jpeg", "upsert": "true"}
+            path, data_final, {"content-type": "image/jpeg", "upsert": "true"}
         )
         url = sb.storage.from_("Productos").get_public_url(path)
         return {"ok": True, "imagen_url": url}
@@ -2410,25 +2442,6 @@ async def registrar_auditoria_endpoint(data: dict):
             datos_nuevos=data.get("datos_nuevos"),
         )
         return {"ok": True}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-
-# ─── Marcar producto como materia prima ──────────────────────────────────────
-
-@app.post("/marcar-materia-prima")
-async def marcar_materia_prima(data: dict):
-    try:
-        sb = get_supabase()
-        producto_id = data.get("producto_id")
-        es_materia_prima = data.get("es_materia_prima", True)
-        if not producto_id:
-            raise HTTPException(status_code=400, detail="Se requiere producto_id")
-        sb.table("productos").update({"es_materia_prima": es_materia_prima}).eq("id", producto_id).execute()
-        return {"ok": True, "producto_id": producto_id, "es_materia_prima": es_materia_prima}
-    except HTTPException:
-        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
