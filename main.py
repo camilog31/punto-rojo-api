@@ -243,29 +243,36 @@ def parse_invoice(root: ET.Element) -> dict:
     iva      = money(total - subtotal) if subtotal and total and total >= subtotal else 0.0
 
     lines = []
-    # Primero recolectar todos los SKUs (y nombres de líneas sin SKU) para detectar duplicados
-    all_skus_raw = []
-    nombres_sin_sku = []
+    def _id_valido(txt):
+        txt = (txt or "").strip()
+        return txt if txt and txt != "0" else ""
+
+    # Primero recolectar el SKU y el nombre de CADA línea, sin decidir nada todavía
+    raw_skus_por_linea = []
+    descs_por_linea = []
     for line in all_descendants(root, "InvoiceLine"):
-        def _id_valido(txt):
-            txt = (txt or "").strip()
-            return txt if txt and txt != "0" else ""
         raw_sku = (
             _id_valido(first_text(line, ["Item","StandardItemIdentification","ID"])) or
             _id_valido(first_text(line, ["Item","SellersItemIdentification","ID"])) or
             ""
         )
-        all_skus_raw.append(raw_sku)
-        if not raw_sku:
-            desc_dup = first_text(line, ["Item","Description"]) or first_text(line, ["Item","Name"]) or ""
-            nombres_sin_sku.append(desc_dup)
-    # SKUs que aparecen en más de una línea son inútiles (proveedor los usa como placeholder)
-    sku_counts = Counter(s for s in all_skus_raw if s)
+        raw_skus_por_linea.append(raw_sku)
+        descs_por_linea.append(first_text(line, ["Item","Description"]) or first_text(line, ["Item","Name"]) or "")
+
+    # SKUs que aparecen en más de una línea son inútiles (proveedor los usa como placeholder,
+    # ej. el mismo código base para dos lotes/despachos distintos del mismo producto)
+    sku_counts = Counter(s for s in raw_skus_por_linea if s)
     skus_duplicados = {s for s, c in sku_counts.items() if c > 1}
-    # Nombres que se repiten entre varias líneas SIN SKU real dentro de ESTA factura: son
-    # productos distintos que el proveedor no diferencia por código. Si ambos se guardan con
-    # sku_proveedor="" chocarían entre sí contra la unique constraint
-    # (proveedor_id, sku_proveedor, nombre_factura).
+
+    # Nombres de líneas que van a terminar con SKU temporal -- ya sea porque no traían
+    # ningún código, O porque el código que traían resultó ser un placeholder repetido
+    # entre varias líneas. Si ese nombre se repite entre varias de esas líneas, son
+    # productos distintos que chocarían en la unique constraint
+    # (proveedor_id, sku_proveedor, nombre_factura) si se guardan todos con sku_proveedor="".
+    nombres_sin_sku = [
+        desc for raw_sku, desc in zip(raw_skus_por_linea, descs_por_linea)
+        if not raw_sku or raw_sku in skus_duplicados
+    ]
     nombre_counts = Counter(nombres_sin_sku)
     nombres_duplicados_sin_sku = {n for n, c in nombre_counts.items() if c > 1 and n}
 
@@ -333,7 +340,7 @@ def parse_invoice(root: ET.Element) -> dict:
             "linea": i,
             "sku_proveedor": str(sku or ""),
             "nombre_factura": desc,
-            "nombre_duplicado_sin_sku": (not raw_sku) and (desc in nombres_duplicados_sin_sku),
+            "nombre_duplicado_sin_sku": ((not raw_sku) or (raw_sku in skus_duplicados)) and (desc in nombres_duplicados_sin_sku),
             "cantidad_facturada": qty,
             "precio_unitario_factura": precio_unitario,
             "subtotal_linea": line_ext,
