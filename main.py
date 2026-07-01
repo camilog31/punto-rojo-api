@@ -243,8 +243,9 @@ def parse_invoice(root: ET.Element) -> dict:
     iva      = money(total - subtotal) if subtotal and total and total >= subtotal else 0.0
 
     lines = []
-    # Primero recolectar todos los SKUs para detectar duplicados
+    # Primero recolectar todos los SKUs (y nombres de líneas sin SKU) para detectar duplicados
     all_skus_raw = []
+    nombres_sin_sku = []
     for line in all_descendants(root, "InvoiceLine"):
         def _id_valido(txt):
             txt = (txt or "").strip()
@@ -255,9 +256,18 @@ def parse_invoice(root: ET.Element) -> dict:
             ""
         )
         all_skus_raw.append(raw_sku)
+        if not raw_sku:
+            desc_dup = first_text(line, ["Item","Description"]) or first_text(line, ["Item","Name"]) or ""
+            nombres_sin_sku.append(desc_dup)
     # SKUs que aparecen en más de una línea son inútiles (proveedor los usa como placeholder)
     sku_counts = Counter(s for s in all_skus_raw if s)
     skus_duplicados = {s for s, c in sku_counts.items() if c > 1}
+    # Nombres que se repiten entre varias líneas SIN SKU real dentro de ESTA factura: son
+    # productos distintos que el proveedor no diferencia por código. Si ambos se guardan con
+    # sku_proveedor="" chocarían entre sí contra la unique constraint
+    # (proveedor_id, sku_proveedor, nombre_factura).
+    nombre_counts = Counter(nombres_sin_sku)
+    nombres_duplicados_sin_sku = {n for n, c in nombre_counts.items() if c > 1 and n}
 
     for i, line in enumerate(all_descendants(root, "InvoiceLine"), start=1):
         qty      = parse_decimal(first_text(line, ["InvoicedQuantity"]), 1) or 1
@@ -323,6 +333,7 @@ def parse_invoice(root: ET.Element) -> dict:
             "linea": i,
             "sku_proveedor": str(sku or ""),
             "nombre_factura": desc,
+            "nombre_duplicado_sin_sku": (not raw_sku) and (desc in nombres_duplicados_sin_sku),
             "cantidad_facturada": qty,
             "precio_unitario_factura": precio_unitario,
             "subtotal_linea": line_ext,
@@ -547,18 +558,37 @@ def _es_sku_temporal(sku: str) -> bool:
     no manda un código real. Nunca deben usarse para buscar matches."""
     return bool(re.match(r'^L\d{3}$', (sku or "").strip()))
 
-def find_similar_product(supabase: Client, proveedor_nit: str, sku: str, nombre: str):
-    # SKU vacío o temporal → nunca hacer match, siempre es producto nuevo
+def find_similar_product(supabase: Client, proveedor_nit: str, sku: str, nombre: str, nombre_duplicado_sin_sku: bool = False):
+    SELECT_MATCH_COLS = (
+        "id,sku_interno,sku_proveedor,nombre_punto_rojo,categoria,subcategoria,"
+        "presentacion_facturada,precio_es_por,unidades_por_paquete,paquetes_por_caja,unidades_por_caja,"
+        "costo_unidad_sin_iva,markup_unidad_pct,markup_paquete_pct,markup_caja_pct,"
+        "markup_millar_pct,markup_kg_pct,markup_rollo_pct,markup_metro_pct,"
+        "venta_unidad,venta_paquete,venta_caja,venta_millar,venta_kg,venta_rollo,venta_metro,costo_transporte,es_materia_prima"
+    )
+    # SKU vacío o temporal → nunca hacer match por SKU
     if not sku or _es_sku_temporal(sku):
+        # Si el nombre se repite en otra línea de ESTA MISMA factura sin SKU real, no
+        # buscar match: son productos distintos y deben quedar separados.
+        if nombre_duplicado_sin_sku or not proveedor_nit:
+            return {"match": "Nuevo", "producto": None}
+        # Compra recurrente de un producto sin código de proveedor: buscar si ya existe
+        # uno de este proveedor con el mismo nombre y sku_proveedor="" para actualizarlo
+        # en vez de crear un duplicado que choque contra la unique constraint.
+        try:
+            prov = supabase.table("proveedores").select("id").eq("nit", proveedor_nit).limit(1).execute()
+            if prov.data:
+                r = supabase.table("productos").select(SELECT_MATCH_COLS) \
+                    .eq("proveedor_id", prov.data[0]["id"]).eq("sku_proveedor", "") \
+                    .eq("nombre_factura", nombre).eq("activo", True).limit(1).execute()
+                if r.data:
+                    return {"match": "Exacto", "producto": r.data[0]}
+        except Exception:
+            pass
         return {"match": "Nuevo", "producto": None}
     try:
-        r = supabase.table("productos").select(
-            "id,sku_interno,sku_proveedor,nombre_punto_rojo,categoria,subcategoria,"
-            "presentacion_facturada,precio_es_por,unidades_por_paquete,paquetes_por_caja,unidades_por_caja,"
-            "costo_unidad_sin_iva,markup_unidad_pct,markup_paquete_pct,markup_caja_pct,"
-            "markup_millar_pct,markup_kg_pct,markup_rollo_pct,markup_metro_pct,"
-            "venta_unidad,venta_paquete,venta_caja,venta_millar,venta_kg,venta_rollo,venta_metro,costo_transporte,es_materia_prima"
-        ).eq("sku_proveedor", sku).eq("activo", True).limit(1).execute()
+        r = supabase.table("productos").select(SELECT_MATCH_COLS) \
+            .eq("sku_proveedor", sku).eq("activo", True).limit(1).execute()
         if r.data:
             return {"match": "Exacto", "producto": r.data[0]}
     except Exception:
@@ -701,7 +731,7 @@ async def parse_invoice_endpoint(
     try:
         sb = get_supabase()
         for line in invoice["lineas"]:
-            match_info = find_similar_product(sb, invoice["proveedor_nit"] or "", line["sku_proveedor"], line["nombre_factura"])
+            match_info = find_similar_product(sb, invoice["proveedor_nit"] or "", line["sku_proveedor"], line["nombre_factura"], line.get("nombre_duplicado_sin_sku", False))
             line["match_tipo"]  = match_info["match"]
             line["producto_bd"] = match_info["producto"]
 
@@ -907,6 +937,21 @@ async def save_invoice_endpoint(data: dict):
         # 3. Insertar/actualizar productos e historial
         for line in lineas:
             prod_id = line.get("producto_id")
+
+            # Red de seguridad: si por algún motivo el match no llegó desde el preview
+            # (ej. datos editados manualmente), reintentar la búsqueda por nombre antes
+            # de insertar, para no chocar contra la unique constraint.
+            if not prod_id and not line.get("nombre_duplicado_sin_sku"):
+                raw_sku_linea = (line.get("sku_proveedor") or "").strip()
+                if not raw_sku_linea or _es_sku_temporal(raw_sku_linea):
+                    existente = sb.table("productos").select("id").eq(
+                        "proveedor_id", proveedor_id
+                    ).eq("sku_proveedor", "").eq(
+                        "nombre_factura", line.get("nombre_factura", "")
+                    ).eq("activo", True).limit(1).execute()
+                    if existente.data:
+                        prod_id = existente.data[0]["id"]
+
             up      = int(line.get("unidades_por_paquete") or 1)
             pc      = int(line.get("paquetes_por_caja") or 1)
             uc      = up * pc
@@ -981,7 +1026,10 @@ async def save_invoice_endpoint(data: dict):
                 # código real. Si lo guardamos en la BD, futuras facturas del mismo
                 # proveedor harán match falso contra productos completamente distintos.
                 sku_guardar = line.get("sku_proveedor", "") or ""
-                if _es_sku_temporal(sku_guardar):
+                # Si el nombre se repite en otra línea de ESTA factura sin SKU real, no
+                # limpiar a "" — chocaría contra la otra línea en la unique constraint y
+                # fusionaría dos productos que en realidad son distintos.
+                if _es_sku_temporal(sku_guardar) and not line.get("nombre_duplicado_sin_sku"):
                     sku_guardar = ""
 
                 producto_payload = {
