@@ -1565,8 +1565,13 @@ async def listar_categorias():
             except Exception:
                 pass
 
+        # Union: categorías con al menos un producto activo + categorías creadas
+        # manualmente desde Admin aunque todavía no tengan ningún producto -- si no,
+        # "Crear categoría" guarda bien pero nunca aparece hasta que algo la use.
+        todas_categorias = cats_productos | set(orden_map.keys())
+
         # Ordenar por orden guardado, luego alfabético para empates
-        categorias = sorted(cats_productos, key=lambda c: (orden_map.get(c, 9999), c.upper()))
+        categorias = sorted(todas_categorias, key=lambda c: (orden_map.get(c, 9999), c.upper()))
         return {"ok": True, "categorias": categorias}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
