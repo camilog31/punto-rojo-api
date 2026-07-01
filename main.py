@@ -1536,16 +1536,27 @@ async def listar_categorias():
         orden_r = sb.table("categorias_orden").select("nombre,orden").execute()
         orden_map = {row["nombre"]: row["orden"] for row in (orden_r.data or [])}
 
-        # Registrar categorías nuevas que no están en categorias_orden
+        # Registrar categorías nuevas que no están en categorias_orden -- insertadas
+        # en su posición alfabética dentro del orden actual, no siempre al final,
+        # igual que ya hace el botón "Crear categoría" en Admin.
         nuevas = [c for c in cats_productos if c not in orden_map]
         if nuevas:
-            max_orden = max(orden_map.values(), default=0)
-            for i, nueva in enumerate(sorted(nuevas), 1):
-                try:
-                    sb.table("categorias_orden").insert({"nombre": nueva, "orden": max_orden + i * 10}).execute()
-                    orden_map[nueva] = max_orden + i * 10
-                except Exception:
-                    pass
+            lista_actual = [n for n, _ in sorted(orden_map.items(), key=lambda kv: kv[1])]
+            for nueva in sorted(nuevas):
+                pos = len(lista_actual)
+                for idx, nombre_existente in enumerate(lista_actual):
+                    if nombre_existente.upper() > nueva.upper():
+                        pos = idx
+                        break
+                lista_actual.insert(pos, nueva)
+            try:
+                for i, nombre in enumerate(lista_actual):
+                    nuevo_orden = (i + 1) * 10
+                    if orden_map.get(nombre) != nuevo_orden:
+                        sb.table("categorias_orden").upsert({"nombre": nombre, "orden": nuevo_orden}, on_conflict="nombre").execute()
+                    orden_map[nombre] = nuevo_orden
+            except Exception:
+                pass
 
         # Ordenar por orden guardado, luego alfabético para empates
         categorias = sorted(cats_productos, key=lambda c: (orden_map.get(c, 9999), c.upper()))
