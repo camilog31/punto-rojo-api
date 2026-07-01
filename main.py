@@ -615,7 +615,7 @@ def get_proveedor_info(supabase: Client, nit: str, nombre: str) -> dict:
                 "id,proveedor_nombre,forma_pago,descuento_pct,aplica_retefuente,tipo,regimen,descuento_afecta_costo"
             ).eq("nit", nit).limit(1).execute()
             if r.data:
-                return r.data[0]
+                return {**r.data[0], "encontrado_por": "nit"}
 
         r2 = supabase.rpc("match_proveedor", {"nombre_buscar": nombre}).execute()
         if r2.data:
@@ -631,6 +631,7 @@ def get_proveedor_info(supabase: Client, nit: str, nombre: str) -> dict:
                 "regimen":               row.get("regimen"),
                 "descuento_afecta_costo": row.get("descuento_afecta_costo", False),
                 "similitud":             row.get("similitud"),
+                "encontrado_por":        "nombre",
             }
     except Exception:
         pass
@@ -886,15 +887,18 @@ async def save_invoice_endpoint(data: dict):
             r2 = sb.table("proveedores").insert({"nombre": nombre, "nit": nit}).execute()
             proveedor_id = r2.data[0]["id"]
 
-        # 1b. Actualizar NIT en proveedores_contables si no lo tiene
-        if nit:
+        # 1b. Vincular NIT en proveedores_contables — solo si el usuario confirmó
+        # explícitamente en el preview que este proveedor (encontrado por nombre
+        # parecido, sin NIT propio) es el mismo de esta factura. Antes se hacía
+        # automático y en silencio, lo que podía vincular mal proveedores con
+        # nombres parecidos pero configuración distinta (ej. dos perfiles del
+        # mismo proveedor real para líneas de producto diferentes).
+        confirmar_pc_id = data.get("confirmar_proveedor_id")
+        if nit and confirmar_pc_id:
             try:
-                rc = sb.rpc("match_proveedor", {"nombre_buscar": nombre}).execute()
-                if rc.data:
-                    pc_id = rc.data[0].get("id")
-                    pc_nit = rc.data[0].get("nit")
-                    if pc_id and not pc_nit:
-                        sb.table("proveedores_contables").update({"nit": nit}).eq("id", pc_id).execute()
+                pc_check = sb.table("proveedores_contables").select("id,nit").eq("id", confirmar_pc_id).maybe_single().execute()
+                if pc_check.data and not pc_check.data.get("nit"):
+                    sb.table("proveedores_contables").update({"nit": nit}).eq("id", confirmar_pc_id).execute()
             except Exception:
                 pass
 
