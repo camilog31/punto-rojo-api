@@ -1717,12 +1717,17 @@ async def crear_producto_derivado(data: dict):
         calibre   = float(data.get("calibre") or 0)
         precio_kg = float(data.get("precio_kg") or 0)
         constante = float(data.get("constante") or 0.0302)
+        sellado   = float(data.get("sellado") or 0)
         uds_paquete = int(data.get("uds_paquete") or 100)
 
+        # Si se usa la formula, guardamos tambien sus datos (no solo el resultado)
+        # para que el trigger de Supabase pueda recalcular este producto cuando
+        # cambie el precio de la materia prima.
+        usa_formula = ancho > 0 and largo > 0 and calibre > 0 and precio_kg > 0
         costo_unidad = 0.0
-        if ancho > 0 and largo > 0 and calibre > 0 and precio_kg > 0:
+        if usa_formula:
             costo_100 = (ancho * largo * constante * calibre * precio_kg) / 10
-            costo_unidad = money(costo_100 / 100)
+            costo_unidad = money(costo_100 / 100) + sellado
         else:
             costo_unidad = float(data.get("costo_unidad") or 0)
 
@@ -1769,6 +1774,11 @@ async def crear_producto_derivado(data: dict):
             "venta_metro":             bool(data.get("venta_metro", False)),
             "es_materia_prima":        False,
             "materia_prima_id":        materia_prima_id,
+            "derivado_ancho":          ancho if usa_formula else None,
+            "derivado_largo":          largo if usa_formula else None,
+            "derivado_calibre":        calibre if usa_formula else None,
+            "derivado_constante":      constante if usa_formula else None,
+            "derivado_sellado":        sellado if usa_formula else None,
             "presentaciones_extra":    presentaciones_extra,
             "activo":                  True,
             "nota_descuento":          data.get("notas") or "",
