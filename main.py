@@ -573,29 +573,44 @@ def find_similar_product(supabase: Client, proveedor_nit: str, sku: str, nombre:
         "markup_millar_pct,markup_kg_pct,markup_rollo_pct,markup_metro_pct,"
         "venta_unidad,venta_paquete,venta_caja,venta_millar,venta_kg,venta_rollo,venta_metro,costo_transporte,es_materia_prima"
     )
+    # Resolver el proveedor_id una sola vez -- se necesita en ambos caminos de abajo
+    # para no emparejar nunca productos de un proveedor con el codigo de otro.
+    prov_id = None
+    if proveedor_nit:
+        try:
+            prov = supabase.table("proveedores").select("id").eq("nit", proveedor_nit).limit(1).execute()
+            if prov.data:
+                prov_id = prov.data[0]["id"]
+        except Exception:
+            pass
+
     # SKU vacío o temporal → nunca hacer match por SKU
     if not sku or _es_sku_temporal(sku):
         # Si el nombre se repite en otra línea de ESTA MISMA factura sin SKU real, no
         # buscar match: son productos distintos y deben quedar separados.
-        if nombre_duplicado_sin_sku or not proveedor_nit:
+        if nombre_duplicado_sin_sku or prov_id is None:
             return {"match": "Nuevo", "producto": None}
         # Compra recurrente de un producto sin código de proveedor: buscar si ya existe
         # uno de este proveedor con el mismo nombre y sku_proveedor="" para actualizarlo
         # en vez de crear un duplicado que choque contra la unique constraint.
         try:
-            prov = supabase.table("proveedores").select("id").eq("nit", proveedor_nit).limit(1).execute()
-            if prov.data:
-                r = supabase.table("productos").select(SELECT_MATCH_COLS) \
-                    .eq("proveedor_id", prov.data[0]["id"]).eq("sku_proveedor", "") \
-                    .eq("nombre_factura", nombre).eq("activo", True).limit(1).execute()
-                if r.data:
-                    return {"match": "Exacto", "producto": r.data[0]}
+            r = supabase.table("productos").select(SELECT_MATCH_COLS) \
+                .eq("proveedor_id", prov_id).eq("sku_proveedor", "") \
+                .eq("nombre_factura", nombre).eq("activo", True).limit(1).execute()
+            if r.data:
+                return {"match": "Exacto", "producto": r.data[0]}
         except Exception:
             pass
         return {"match": "Nuevo", "producto": None}
+
+    # Match exacto por SKU del proveedor -- SIEMPRE filtrado por proveedor_id, para que
+    # un codigo corto/generico (ej. "1", "2") de un proveedor nunca empareje con el
+    # producto de OTRO proveedor que use el mismo codigo por coincidencia.
+    if prov_id is None:
+        return {"match": "Nuevo", "producto": None}
     try:
         r = supabase.table("productos").select(SELECT_MATCH_COLS) \
-            .eq("sku_proveedor", sku).eq("activo", True).limit(1).execute()
+            .eq("sku_proveedor", sku).eq("proveedor_id", prov_id).eq("activo", True).limit(1).execute()
         if r.data:
             return {"match": "Exacto", "producto": r.data[0]}
     except Exception:
