@@ -2,7 +2,7 @@
 Punto Rojo — API de procesamiento de facturas XML DIAN
 Servidor FastAPI que recibe ZIP/XML y devuelve los datos procesados.
 """
-import os, io, re, zipfile, json
+import os, io, re, zipfile, json, difflib
 import xml.etree.ElementTree as ET
 from datetime import datetime, date
 from decimal import Decimal, ROUND_HALF_UP
@@ -565,9 +565,28 @@ def _es_sku_temporal(sku: str) -> bool:
     no manda un código real. Nunca deben usarse para buscar matches."""
     return bool(re.match(r'^L\d{3}$', (sku or "").strip()))
 
+def nombres_muy_distintos(nombre_nuevo: str, nombre_guardado: str) -> bool:
+    """Compara la descripcion de la linea nueva contra la del producto ya guardado
+    cuando el emparejamiento fue por codigo de proveedor (no por nombre). Sirve de
+    aviso -- no bloquea nada -- para detectar proveedores que reutilizan el mismo
+    codigo para variantes distintas (ej: 'SIN CORDON' vs 'CON CORDON')."""
+    a = (nombre_nuevo or "").strip().upper()
+    b = (nombre_guardado or "").strip().upper()
+    if not a or not b:
+        return False
+    # Regla especial: una dice "CON X" y la otra "SIN X" -- casi siempre son
+    # variantes distintas del mismo producto base, aunque el resto del texto
+    # sea casi identico (por eso la similitud general no las atrapa).
+    if (" CON " in f" {a} " and " SIN " in f" {b} ") or (" SIN " in f" {a} " and " CON " in f" {b} "):
+        return True
+    # Similitud general de texto -- descripciones del mismo producto varian poco
+    # entre facturas (mayusculas, espacios); una caida grande sugiere otro producto.
+    ratio = difflib.SequenceMatcher(None, a, b).ratio()
+    return ratio < 0.6
+
 def find_similar_product(supabase: Client, proveedor_nit: str, sku: str, nombre: str, nombre_duplicado_sin_sku: bool = False):
     SELECT_MATCH_COLS = (
-        "id,sku_interno,sku_proveedor,nombre_punto_rojo,categoria,subcategoria,"
+        "id,sku_interno,sku_proveedor,nombre_factura,nombre_punto_rojo,categoria,subcategoria,"
         "presentacion_facturada,precio_es_por,unidades_por_paquete,paquetes_por_caja,unidades_por_caja,"
         "costo_unidad_sin_iva,markup_unidad_pct,markup_paquete_pct,markup_caja_pct,"
         "markup_millar_pct,markup_kg_pct,markup_rollo_pct,markup_metro_pct,"
@@ -598,7 +617,7 @@ def find_similar_product(supabase: Client, proveedor_nit: str, sku: str, nombre:
                 .eq("proveedor_id", prov_id).eq("sku_proveedor", "") \
                 .eq("nombre_factura", nombre).eq("activo", True).limit(1).execute()
             if r.data:
-                return {"match": "Exacto", "producto": r.data[0]}
+                return {"match": "Exacto", "producto": r.data[0], "via": "nombre"}
         except Exception:
             pass
         return {"match": "Nuevo", "producto": None}
@@ -612,7 +631,7 @@ def find_similar_product(supabase: Client, proveedor_nit: str, sku: str, nombre:
         r = supabase.table("productos").select(SELECT_MATCH_COLS) \
             .eq("sku_proveedor", sku).eq("proveedor_id", prov_id).eq("activo", True).limit(1).execute()
         if r.data:
-            return {"match": "Exacto", "producto": r.data[0]}
+            return {"match": "Exacto", "producto": r.data[0], "via": "sku"}
     except Exception:
         pass
     return {"match": "Nuevo", "producto": None}
@@ -786,6 +805,15 @@ async def parse_invoice_endpoint(
                 line["venta_metro"]            = p.get("venta_metro") if p.get("venta_metro") is not None else line.get("venta_metro", False)
                 line["es_materia_prima"]       = bool(p.get("es_materia_prima"))
                 line["costo_anterior"]         = float(p.get("costo_unidad_sin_iva") or 0)
+
+                # Aviso no bloqueante: si el emparejamiento fue por codigo de proveedor
+                # (no por nombre) y la descripcion de esta linea es muy distinta a la ya
+                # guardada, puede ser un codigo reutilizado por el proveedor para otro
+                # producto (ver caso HITO). No cambia el match ni el guardado, solo avisa.
+                nombre_guardado = p.get("nombre_factura") or p.get("nombre_punto_rojo") or ""
+                if match_info.get("via") == "sku" and nombres_muy_distintos(line["nombre_factura"], nombre_guardado):
+                    line["aviso_nombre_distinto"] = True
+                    line["nombre_guardado_anterior"] = nombre_guardado
 
     except Exception as e:
         invoice["supabase_match_error"] = str(e)
