@@ -1190,6 +1190,7 @@ async def save_invoice_endpoint(data: dict):
                 "markup_metro_pct":             float(line.get("markup_metro_pct") or 40),
                 "precio_factura_original":      precio_fact_base,
                 "precio_es_por":                precio_es_por_s,
+                "nota":                         (line.get("nota") or "").strip() or None,
             }).execute()
 
             # Historial de descuentos
@@ -2163,7 +2164,7 @@ async def enviar_reporte_costos(data: dict):
         desde = f"{fecha}T00:00:00"
         hasta = f"{fecha}T23:59:59"
         hist_res = sb.table("historial_costos").select(
-            "producto_id,estado,costo_unidad_anterior,costo_unidad_nuevo,variacion_porcentaje,factura_id,presentacion_facturada,costo_presentacion_facturada"
+            "producto_id,estado,costo_unidad_anterior,costo_unidad_nuevo,variacion_porcentaje,factura_id,presentacion_facturada,costo_presentacion_facturada,nota"
         ).gte("creada_en", desde).lte("creada_en", hasta).in_("estado", ["NUEVO", "SUBIO", "BAJO"]).order("estado").execute()
 
         hist = hist_res.data or []
@@ -2215,6 +2216,7 @@ async def enviar_reporte_costos(data: dict):
                 "categoria":   p.get("categoria") or "—",
                 "proveedor":   p.get("proveedor_nombre") or "—",
                 "factura":     f.get("numero_factura") or "—",
+                "nota":        h.get("nota") or "",
                 "costo_ant":   h.get("costo_unidad_anterior") or 0,
                 "costo_nuevo": cu,
                 "costo_presentacion": h.get("costo_presentacion_facturada") or cu,
@@ -2294,12 +2296,18 @@ async def enviar_reporte_costos(data: dict):
                 if item["costo_ant"] > 0:
                     costo_ant_html = f'<span style="color:#aaa;font-size:11px;text-decoration:line-through;margin-right:6px;">{fmt(item["costo_ant"])}</span>'
 
+                nota_item_html = ""
+                if item.get("nota"):
+                    import html as _html_local
+                    nota_item_html = f'<p style="font-size:11px;color:#92400e;background:#fffbeb;border-left:3px solid #f59e0b;padding:4px 8px;margin:4px 0 0;border-radius:4px;">⚠️ {_html_local.escape(item["nota"])}</p>'
+
                 filas += f"""
                 <tr style="border-bottom:1px solid #f0f0f0;">
                   <td style="padding:10px 12px;vertical-align:top;">
                     <strong style="font-size:13px;color:#111;">{item["nombre"]}</strong><br>
                     <span style="font-size:11px;color:#888;">{item["categoria"]} · {item["proveedor"]}</span><br>
                     <span style="font-size:10px;color:#bbb;">Factura: {item["factura"]}</span>
+                    {nota_item_html}
                   </td>
                   <td style="padding:10px 12px;vertical-align:top;white-space:nowrap;">
                     {costo_ant_html}
