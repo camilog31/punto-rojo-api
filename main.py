@@ -606,9 +606,25 @@ def find_similar_product(supabase: Client, proveedor_nit: str, sku: str, nombre:
     # SKU vacío o temporal → nunca hacer match por SKU
     if not sku or _es_sku_temporal(sku):
         # Si el nombre se repite en otra línea de ESTA MISMA factura sin SKU real, no
-        # buscar match: son productos distintos y deben quedar separados.
+        # emparejar automaticamente: son productos distintos y deben quedar separados
+        # (ej. un codigo generico reutilizado para variantes distintas). PERO si ademas
+        # ya existe un producto activo de este proveedor con el mismo nombre (de una
+        # factura anterior o de otra linea), avisar -- puede ser el mismo producto
+        # comprado en varios rollos/lotes dentro de esta factura (ver caso IPM
+        # PRECORTE 31*50: 3 lineas, mismo codigo y nombre, 3 rollos con distinto peso
+        # en kg -- sin este aviso se crean 3 productos duplicados en vez de 1).
         if nombre_duplicado_sin_sku or prov_id is None:
-            return {"match": "Nuevo", "producto": None}
+            posible_duplicado = None
+            if prov_id is not None and nombre_duplicado_sin_sku:
+                try:
+                    rdup = supabase.table("productos").select(
+                        "id,sku_interno,nombre_punto_rojo,costo_unidad_sin_iva"
+                    ).eq("proveedor_id", prov_id).eq("nombre_factura", nombre).eq("activo", True).limit(1).execute()
+                    if rdup.data:
+                        posible_duplicado = rdup.data[0]
+                except Exception:
+                    pass
+            return {"match": "Nuevo", "producto": None, "posible_duplicado": posible_duplicado}
         # Compra recurrente de un producto sin código de proveedor: buscar si ya existe
         # uno de este proveedor con el mismo nombre y sku_proveedor="" para actualizarlo
         # en vez de crear un duplicado que choque contra la unique constraint.
@@ -776,6 +792,14 @@ async def parse_invoice_endpoint(
             match_info = find_similar_product(sb, invoice["proveedor_nit"] or "", line["sku_proveedor"], line["nombre_factura"], line.get("nombre_duplicado_sin_sku", False))
             line["match_tipo"]  = match_info["match"]
             line["producto_bd"] = match_info["producto"]
+
+            # Aviso no bloqueante: mismo nombre/proveedor que un producto ya existente,
+            # detectado aunque el match haya quedado en "Nuevo" (codigo duplicado
+            # dentro de esta factura). No cambia el guardado -- solo avisa para que
+            # se revise si hay que unificar en vez de crear un producto repetido.
+            posible_dup = match_info.get("posible_duplicado")
+            if posible_dup:
+                line["posible_duplicado_existente"] = posible_dup
 
             if match_info["match"] == "Exacto" and match_info["producto"]:
                 p = match_info["producto"]
