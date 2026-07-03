@@ -1811,6 +1811,20 @@ async def crear_producto_derivado(data: dict):
         # presentaciones_extra: lista de presentaciones de venta adicionales (x10, x50, etc.)
         presentaciones_extra = data.get("presentaciones_extra") or []
 
+        # Copiar la ultima factura/fecha de la materia prima base -- sin esto el
+        # derivado queda con ultima_factura vacio para siempre, dando la impresion
+        # de que nunca quedo ligado a ninguna factura.
+        ultima_factura_val = None
+        ultima_fecha_val = None
+        if materia_prima_id:
+            try:
+                mp_row = sb.table("productos").select("ultima_factura,ultima_fecha").eq("id", materia_prima_id).maybe_single().execute()
+                if mp_row.data:
+                    ultima_factura_val = mp_row.data.get("ultima_factura")
+                    ultima_fecha_val = mp_row.data.get("ultima_fecha")
+            except Exception:
+                pass
+
         insert_payload = {
             "sku_interno":             sku_int,
             "sku_proveedor":           "",
@@ -1850,6 +1864,8 @@ async def crear_producto_derivado(data: dict):
             "presentaciones_extra":    presentaciones_extra,
             "activo":                  True,
             "nota_descuento":          data.get("notas") or "",
+            "ultima_factura":          ultima_factura_val,
+            "ultima_fecha":            ultima_fecha_val,
         }
 
         res = sb.table("productos").insert(insert_payload).execute()
