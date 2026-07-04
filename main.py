@@ -46,6 +46,7 @@ PUBLIC_PATHS = {"/", "/catalogo", "/categorias", "/subcategorias", "/todas-subca
 ADMIN_ONLY_PATHS = {
     "/limpiar-tablas",
     "/config-admin",
+    "/unificar-productos",
 }
 
 # Endpoints que requieren admin O contabilidad (igual que el resto de la app,
@@ -2490,6 +2491,52 @@ async def marcar_revisado_factura(data: dict):
 
         sb.table("facturas").update(update_data).eq("id", factura_id).execute()
         return {"ok": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─── Unificar productos duplicados ───────────────────────────────────────────
+
+class UnificarProductosRequest(BaseModel):
+    sobrevive_id: int
+    duplicado_id: int
+
+@app.post("/unificar-productos")
+async def unificar_productos(data: UnificarProductosRequest, request: Request):
+    """Fusiona dos productos duplicados: mueve el historial de costos y
+    descuentos del duplicado hacia el sobreviviente, y borra el duplicado.
+    El costo/markup del sobreviviente NO se toca -- el usuario ya eligio
+    cual de los dos productos debe quedar vigente antes de llamar esto."""
+    try:
+        if data.sobrevive_id == data.duplicado_id:
+            raise HTTPException(status_code=400, detail="Los dos productos deben ser distintos")
+
+        sb = get_supabase()
+        sobrevive = sb.table("productos").select("id,sku_interno,nombre_punto_rojo").eq("id", data.sobrevive_id).maybe_single().execute()
+        duplicado = sb.table("productos").select("id,sku_interno,nombre_punto_rojo").eq("id", data.duplicado_id).maybe_single().execute()
+        if not sobrevive.data or not duplicado.data:
+            raise HTTPException(status_code=404, detail="Producto no encontrado")
+
+        sb.table("historial_costos").update({"producto_id": data.sobrevive_id}).eq("producto_id", data.duplicado_id).execute()
+        sb.table("historial_descuentos").update({"producto_id": data.sobrevive_id}).eq("producto_id", data.duplicado_id).execute()
+        sb.table("productos").delete().eq("id", data.duplicado_id).execute()
+
+        usuario_email  = request.headers.get("X-Usuario-Email", "")
+        usuario_nombre = request.headers.get("X-Usuario-Nombre", "")
+        registrar_auditoria(sb,
+            accion="UNIFICAR_PRODUCTOS", entidad="productos", entidad_id=str(data.sobrevive_id),
+            descripcion=(
+                f"Producto {duplicado.data['sku_interno']} ({duplicado.data['nombre_punto_rojo']}) "
+                f"fusionado dentro de {sobrevive.data['sku_interno']} ({sobrevive.data['nombre_punto_rojo']})"
+            ),
+            usuario_email=usuario_email, usuario_nombre=usuario_nombre,
+            datos_anteriores={"sobrevive": sobrevive.data, "duplicado": duplicado.data},
+        )
+
+        return {"ok": True, "sobrevive_id": data.sobrevive_id, "duplicado_eliminado": data.duplicado_id}
 
     except HTTPException:
         raise
