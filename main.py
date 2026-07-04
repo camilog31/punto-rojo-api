@@ -250,6 +250,8 @@ def parse_invoice(root: ET.Element) -> dict:
     # Primero recolectar el SKU y el nombre de CADA línea, sin decidir nada todavía
     raw_skus_por_linea = []
     descs_por_linea = []
+    qtys_por_linea = []
+    precios_por_linea = []
     for line in all_descendants(root, "InvoiceLine"):
         raw_sku = (
             _id_valido(first_text(line, ["Item","StandardItemIdentification","ID"])) or
@@ -258,6 +260,8 @@ def parse_invoice(root: ET.Element) -> dict:
         )
         raw_skus_por_linea.append(raw_sku)
         descs_por_linea.append(first_text(line, ["Item","Description"]) or first_text(line, ["Item","Name"]) or "")
+        qtys_por_linea.append(parse_decimal(first_text(line, ["InvoicedQuantity"]), 1) or 1)
+        precios_por_linea.append(parse_decimal(first_text(line, ["Price","PriceAmount"])))
 
     # SKUs que aparecen en más de una línea son inútiles (proveedor los usa como placeholder,
     # ej. el mismo código base para dos lotes/despachos distintos del mismo producto)
@@ -275,6 +279,16 @@ def parse_invoice(root: ET.Element) -> dict:
     ]
     nombre_counts = Counter(nombres_sin_sku)
     nombres_duplicados_sin_sku = {n for n, c in nombre_counts.items() if c > 1 and n}
+
+    # De esos nombres duplicados sin SKU, cuáles tienen ADEMÁS la misma cantidad y precio
+    # en todas sus líneas -- eso ya no es el caso legítimo de PRECORTE (varios rollos,
+    # mismo nombre, distinto peso/cantidad cada uno), sino muy probablemente la MISMA
+    # compra contada dos veces por error. Se usa para avisar, no para fusionar solo.
+    grupos_qty_precio: dict = {}
+    for nombre, qty, precio in zip(descs_por_linea, qtys_por_linea, precios_por_linea):
+        if nombre in nombres_duplicados_sin_sku:
+            grupos_qty_precio.setdefault(nombre, set()).add((round(qty, 3), round(precio, 2)))
+    nombres_posible_linea_repetida = {n for n, valores in grupos_qty_precio.items() if len(valores) == 1}
 
     for i, line in enumerate(all_descendants(root, "InvoiceLine"), start=1):
         qty      = parse_decimal(first_text(line, ["InvoicedQuantity"]), 1) or 1
@@ -341,6 +355,7 @@ def parse_invoice(root: ET.Element) -> dict:
             "sku_proveedor": str(sku or ""),
             "nombre_factura": desc,
             "nombre_duplicado_sin_sku": ((not raw_sku) or (raw_sku in skus_duplicados)) and (desc in nombres_duplicados_sin_sku),
+            "posible_linea_repetida": desc in nombres_posible_linea_repetida,
             "cantidad_facturada": qty,
             "precio_unitario_factura": precio_unitario,
             "subtotal_linea": line_ext,
@@ -650,7 +665,20 @@ def find_similar_product(supabase: Client, proveedor_nit: str, sku: str, nombre:
             return {"match": "Exacto", "producto": r.data[0], "via": "sku"}
     except Exception:
         pass
-    return {"match": "Nuevo", "producto": None}
+    # El codigo no emparejo con ningun producto de este proveedor -- puede ser que el
+    # proveedor haya cambiado su esquema de codigos entre facturas (ej. MIO paso de
+    # codigos cortos a codigos de barras y genero duplicados en el catalogo). Avisar si
+    # ya existe un producto activo de este proveedor con el mismo nombre de factura.
+    posible_duplicado = None
+    try:
+        rdup = supabase.table("productos").select(
+            "id,sku_interno,nombre_punto_rojo,costo_unidad_sin_iva"
+        ).eq("proveedor_id", prov_id).eq("nombre_factura", nombre).eq("activo", True).limit(1).execute()
+        if rdup.data:
+            posible_duplicado = rdup.data[0]
+    except Exception:
+        pass
+    return {"match": "Nuevo", "producto": None, "posible_duplicado": posible_duplicado}
 
 def check_duplicate(supabase: Client, cufe: str, numero_factura: str) -> bool:
     try:
