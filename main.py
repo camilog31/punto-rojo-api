@@ -2504,21 +2504,46 @@ class UnificarProductosRequest(BaseModel):
     sobrevive_id: int
     duplicado_id: int
 
+COLS_COSTO_VIGENTE = (
+    "id,sku_interno,nombre_punto_rojo,costo_unidad_sin_iva,costo_paquete_sin_iva,costo_caja_sin_iva,"
+    "ultima_factura,ultima_fecha,nota_descuento,descuento_pct_factura,descuento_aplicado,precio_factura_base"
+)
+
 @app.post("/unificar-productos")
 async def unificar_productos(data: UnificarProductosRequest, request: Request):
     """Fusiona dos productos duplicados: mueve el historial de costos y
     descuentos del duplicado hacia el sobreviviente, y borra el duplicado.
-    El costo/markup del sobreviviente NO se toca -- el usuario ya eligio
-    cual de los dos productos debe quedar vigente antes de llamar esto."""
+    El costo vigente del sobreviviente se actualiza al de la factura MAS
+    RECIENTE entre los dos -- sin importar cual de los dos se haya elegido
+    como sobreviviente -- para no perder un costo mas nuevo que haya llegado
+    al que se termina borrando. El markup NO se toca (es una decision de
+    precio de venta, no algo atado a la fecha de la factura)."""
     try:
         if data.sobrevive_id == data.duplicado_id:
             raise HTTPException(status_code=400, detail="Los dos productos deben ser distintos")
 
         sb = get_supabase()
-        sobrevive = sb.table("productos").select("id,sku_interno,nombre_punto_rojo").eq("id", data.sobrevive_id).maybe_single().execute()
-        duplicado = sb.table("productos").select("id,sku_interno,nombre_punto_rojo").eq("id", data.duplicado_id).maybe_single().execute()
+        sobrevive = sb.table("productos").select(COLS_COSTO_VIGENTE).eq("id", data.sobrevive_id).maybe_single().execute()
+        duplicado = sb.table("productos").select(COLS_COSTO_VIGENTE).eq("id", data.duplicado_id).maybe_single().execute()
         if not sobrevive.data or not duplicado.data:
             raise HTTPException(status_code=404, detail="Producto no encontrado")
+
+        costo_actualizado = False
+        fecha_sobrevive = sobrevive.data.get("ultima_fecha") or ""
+        fecha_duplicado = duplicado.data.get("ultima_fecha") or ""
+        if fecha_duplicado and fecha_duplicado > fecha_sobrevive:
+            sb.table("productos").update({
+                "costo_unidad_sin_iva":   duplicado.data["costo_unidad_sin_iva"],
+                "costo_paquete_sin_iva":  duplicado.data["costo_paquete_sin_iva"],
+                "costo_caja_sin_iva":     duplicado.data["costo_caja_sin_iva"],
+                "ultima_factura":         duplicado.data["ultima_factura"],
+                "ultima_fecha":           duplicado.data["ultima_fecha"],
+                "nota_descuento":         duplicado.data["nota_descuento"],
+                "descuento_pct_factura":  duplicado.data["descuento_pct_factura"],
+                "descuento_aplicado":     duplicado.data["descuento_aplicado"],
+                "precio_factura_base":    duplicado.data["precio_factura_base"],
+            }).eq("id", data.sobrevive_id).execute()
+            costo_actualizado = True
 
         sb.table("historial_costos").update({"producto_id": data.sobrevive_id}).eq("producto_id", data.duplicado_id).execute()
         sb.table("historial_descuentos").update({"producto_id": data.sobrevive_id}).eq("producto_id", data.duplicado_id).execute()
@@ -2531,12 +2556,13 @@ async def unificar_productos(data: UnificarProductosRequest, request: Request):
             descripcion=(
                 f"Producto {duplicado.data['sku_interno']} ({duplicado.data['nombre_punto_rojo']}) "
                 f"fusionado dentro de {sobrevive.data['sku_interno']} ({sobrevive.data['nombre_punto_rojo']})"
+                + (" -- costo actualizado al mas reciente" if costo_actualizado else "")
             ),
             usuario_email=usuario_email, usuario_nombre=usuario_nombre,
             datos_anteriores={"sobrevive": sobrevive.data, "duplicado": duplicado.data},
         )
 
-        return {"ok": True, "sobrevive_id": data.sobrevive_id, "duplicado_eliminado": data.duplicado_id}
+        return {"ok": True, "sobrevive_id": data.sobrevive_id, "duplicado_eliminado": data.duplicado_id, "costo_actualizado": costo_actualizado}
 
     except HTTPException:
         raise
