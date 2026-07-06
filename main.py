@@ -835,6 +835,7 @@ async def parse_invoice_endpoint(
                 line["producto_id"]            = p.get("id")
                 line["nombre_punto_rojo"]      = p.get("nombre_punto_rojo") or line["nombre_factura"]
                 line["categoria"]              = p.get("categoria") or ""
+                line["subcategoria"]           = p.get("subcategoria") or ""
                 line["presentacion_facturada"] = p.get("presentacion_facturada") or line["presentacion_facturada"]
                 line["precio_es_por"]          = p.get("precio_es_por") or ""
                 line["unidades_por_paquete"]   = p.get("unidades_por_paquete") or line["unidades_por_paquete"]
