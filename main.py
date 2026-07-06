@@ -606,6 +606,7 @@ def find_similar_product(supabase: Client, proveedor_nit: str, sku: str, nombre:
         "presentacion_facturada,precio_es_por,unidades_por_paquete,paquetes_por_caja,unidades_por_caja,"
         "costo_unidad_sin_iva,markup_unidad_pct,markup_paquete_pct,markup_caja_pct,"
         "markup_millar_pct,markup_kg_pct,markup_rollo_pct,markup_metro_pct,"
+        "multiplicador_rollo,multiplicador_metro,"
         "venta_unidad,venta_paquete,venta_caja,venta_millar,venta_kg,venta_rollo,venta_metro,costo_transporte,es_materia_prima"
     )
     # Resolver el proveedor_id una sola vez -- se necesita en ambos caminos de abajo
@@ -850,6 +851,8 @@ async def parse_invoice_endpoint(
                 line["markup_kg_pct"]          = p.get("markup_kg_pct") or line.get("markup_kg_pct", 40.0)
                 line["markup_rollo_pct"]       = p.get("markup_rollo_pct") or line.get("markup_rollo_pct", 40.0)
                 line["markup_metro_pct"]       = p.get("markup_metro_pct") or line.get("markup_metro_pct", 40.0)
+                line["multiplicador_rollo"]    = p.get("multiplicador_rollo") or line.get("multiplicador_rollo", 1.0)
+                line["multiplicador_metro"]    = p.get("multiplicador_metro") or line.get("multiplicador_metro", 1.0)
                 line["venta_unidad"]           = p.get("venta_unidad") if p.get("venta_unidad") is not None else line["venta_unidad"]
                 line["venta_paquete"]          = p.get("venta_paquete") if p.get("venta_paquete") is not None else line["venta_paquete"]
                 line["venta_caja"]             = p.get("venta_caja") if p.get("venta_caja") is not None else line["venta_caja"]
@@ -1106,6 +1109,8 @@ async def save_invoice_endpoint(data: dict):
                     "markup_kg_pct":          float(line.get("markup_kg_pct") or 40),
                     "markup_rollo_pct":       float(line.get("markup_rollo_pct") or 40),
                     "markup_metro_pct":       float(line.get("markup_metro_pct") or 40),
+                    "multiplicador_rollo":    float(line.get("multiplicador_rollo") or 1),
+                    "multiplicador_metro":    float(line.get("multiplicador_metro") or 1),
                     **({"es_materia_prima": True} if line.get("es_materia_prima") else {}),
                     "venta_unidad":           bool(line.get("venta_unidad")),
                     "venta_paquete":          bool(line.get("venta_paquete")),
@@ -1162,6 +1167,8 @@ async def save_invoice_endpoint(data: dict):
                     "markup_kg_pct":          float(line.get("markup_kg_pct") or 40),
                     "markup_rollo_pct":       float(line.get("markup_rollo_pct") or 40),
                     "markup_metro_pct":       float(line.get("markup_metro_pct") or 40),
+                    "multiplicador_rollo":    float(line.get("multiplicador_rollo") or 1),
+                    "multiplicador_metro":    float(line.get("multiplicador_metro") or 1),
                     "venta_unidad":           bool(line.get("venta_unidad")),
                     "venta_paquete":          bool(line.get("venta_paquete")),
                     "venta_caja":             bool(line.get("venta_caja")),
@@ -1877,6 +1884,8 @@ async def crear_producto_derivado(data: dict):
             "markup_kg_pct":           float(data.get("markup_kg") or 40),
             "markup_rollo_pct":        float(data.get("markup_rollo") or 40),
             "markup_metro_pct":        float(data.get("markup_metro") or 40),
+            "multiplicador_rollo":     float(data.get("multiplicador_rollo") or 1),
+            "multiplicador_metro":     float(data.get("multiplicador_metro") or 1),
             "venta_unidad":            bool(data.get("venta_unidad", True)),
             "venta_paquete":           bool(data.get("venta_paquete", False)),
             "venta_caja":              bool(data.get("venta_caja", False)),
