@@ -3,6 +3,7 @@ Punto Rojo — API de procesamiento de facturas XML DIAN
 Servidor FastAPI que recibe ZIP/XML y devuelve los datos procesados.
 """
 import os, io, re, zipfile, json, difflib
+import resend
 import xml.etree.ElementTree as ET
 from datetime import datetime, date
 from decimal import Decimal, ROUND_HALF_UP
