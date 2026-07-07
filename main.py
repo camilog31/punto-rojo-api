@@ -644,11 +644,14 @@ def find_similar_product(supabase: Client, proveedor_nit: str, sku: str, nombre:
             return {"match": "Nuevo", "producto": None, "posible_duplicado": posible_duplicado}
         # Compra recurrente de un producto sin código de proveedor: buscar si ya existe
         # uno de este proveedor con el mismo nombre y sku_proveedor="" para actualizarlo
-        # en vez de crear un duplicado que choque contra la unique constraint.
+        # en vez de crear un duplicado que choque contra la unique constraint. NO filtrar
+        # por activo=True aca -- si el producto quedo inactivo (ej. se borro su unica
+        # factura), la restriccion UNIQUE de la tabla sigue existiendo igual, y guardar
+        # sin encontrarlo revienta con "duplicate key" en vez de reactivarlo.
         try:
             r = supabase.table("productos").select(SELECT_MATCH_COLS) \
                 .eq("proveedor_id", prov_id).eq("sku_proveedor", "") \
-                .eq("nombre_factura", nombre).eq("activo", True).limit(1).execute()
+                .eq("nombre_factura", nombre).limit(1).execute()
             if r.data:
                 return {"match": "Exacto", "producto": r.data[0], "via": "nombre"}
         except Exception:
@@ -661,8 +664,11 @@ def find_similar_product(supabase: Client, proveedor_nit: str, sku: str, nombre:
     if prov_id is None:
         return {"match": "Nuevo", "producto": None}
     try:
+        # Tampoco filtrar por activo=True aca -- mismo motivo que en el match por nombre:
+        # la restriccion UNIQUE de (proveedor_id, sku_proveedor, nombre_factura) aplica
+        # aunque el producto este inactivo.
         r = supabase.table("productos").select(SELECT_MATCH_COLS) \
-            .eq("sku_proveedor", sku).eq("proveedor_id", prov_id).eq("activo", True).limit(1).execute()
+            .eq("sku_proveedor", sku).eq("proveedor_id", prov_id).limit(1).execute()
         if r.data:
             return {"match": "Exacto", "producto": r.data[0], "via": "sku"}
     except Exception:
@@ -1055,11 +1061,15 @@ async def save_invoice_endpoint(data: dict):
             if not prod_id and not line.get("nombre_duplicado_sin_sku"):
                 raw_sku_linea = (line.get("sku_proveedor") or "").strip()
                 if not raw_sku_linea or _es_sku_temporal(raw_sku_linea):
+                    # No filtrar por activo=True: la restriccion UNIQUE de productos
+                    # (proveedor_id, sku_proveedor, nombre_factura) igual bloquea el
+                    # INSERT si el producto existe pero quedo inactivo -- hay que
+                    # encontrarlo para reactivarlo en el UPDATE de mas abajo, no chocar.
                     existente = sb.table("productos").select("id").eq(
                         "proveedor_id", proveedor_id
                     ).eq("sku_proveedor", "").eq(
                         "nombre_factura", line.get("nombre_factura", "")
-                    ).eq("activo", True).limit(1).execute()
+                    ).limit(1).execute()
                     if existente.data:
                         prod_id = existente.data[0]["id"]
 
@@ -1111,6 +1121,7 @@ async def save_invoice_endpoint(data: dict):
                     "markup_metro_pct":       float(line.get("markup_metro_pct") or 40),
                     "multiplicador_rollo":    float(line.get("multiplicador_rollo") or 1),
                     "multiplicador_metro":    float(line.get("multiplicador_metro") or 1),
+                    "activo":                 True,
                     **({"es_materia_prima": True} if line.get("es_materia_prima") else {}),
                     "venta_unidad":           bool(line.get("venta_unidad")),
                     "venta_paquete":          bool(line.get("venta_paquete")),
