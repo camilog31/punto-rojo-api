@@ -2503,6 +2503,8 @@ async def marcar_revisado_factura(data: dict):
         if not factura_id:
             raise HTTPException(status_code=400, detail="Se requiere factura_id")
 
+        fact = sb.table("facturas").select("creada_en").eq("id", factura_id).maybe_single().execute()
+
         update_data = {"revisado": revisado}
         if revisado:
             update_data["revisado_por"] = revisado_por
@@ -2512,6 +2514,24 @@ async def marcar_revisado_factura(data: dict):
             update_data["revisado_en"]  = None
 
         sb.table("facturas").update(update_data).eq("id", factura_id).execute()
+
+        # Sincronizar el revisado del dia completo (usado por el dashboard para
+        # las alertas de costo) en el mismo request. Si esto se hiciera desde el
+        # frontend con una lectura + escritura separada (como antes), marcar
+        # varias facturas del mismo dia rapido seguido corre la carrera de que
+        # una respuesta tardia pise el resultado de otra mas reciente y deje el
+        # dia sin marcar aunque todas las facturas ya esten revisadas.
+        fecha_dia = ((fact.data or {}).get("creada_en") or "")[:10]
+        if fecha_dia:
+            desde = f"{fecha_dia}T00:00:00"
+            hasta = f"{fecha_dia}T23:59:59"
+            facts_dia = sb.table("facturas").select("revisado").gte("creada_en", desde).lte("creada_en", hasta).execute()
+            todas_revisadas = bool(facts_dia.data) and all(f.get("revisado") for f in facts_dia.data)
+            sb.table("reportes_revisados").upsert({
+                "fecha": fecha_dia,
+                "revisado_por": revisado_por if todas_revisadas else None,
+            }, on_conflict="fecha").execute()
+
         return {"ok": True}
 
     except HTTPException:
