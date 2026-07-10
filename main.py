@@ -2087,6 +2087,7 @@ async def enviar_reporte_mensual(data: dict):
         total_rete          = float(data.get("total_rete", 0))
         total_descuentos    = float(data.get("total_descuentos", 0))
         total_arriendos     = float(data.get("total_arriendos", 0))
+        subtotal_arriendos  = float(data.get("subtotal_arriendos", 0))
         ventas              = float(data.get("ventas", 0))
         iva_ventas          = float(data.get("iva_ventas", 0))
         iva_arriendos       = float(data.get("iva_arriendos", 0))
@@ -2100,7 +2101,9 @@ async def enviar_reporte_mensual(data: dict):
         def fmt(n: float) -> str:
             return f"${int(round(n)):,}".replace(",", ".")
 
-        color_iva = "#f59e0b" if iva_neto > 0 else "#22c55e"
+        color_iva     = "#f59e0b" if iva_neto > 0 else "#22c55e"
+        total_ventas  = ventas + iva_ventas
+        total_compras_neto = total_compras + total_iva_compras - total_rete
 
         html = f"""
         <div style="font-family:sans-serif;max-width:600px;margin:0 auto;background:#f4f4f5;padding:32px;border-radius:12px;">
@@ -2112,29 +2115,39 @@ async def enviar_reporte_mensual(data: dict):
           <div style="background:white;border-radius:8px;padding:20px;margin-bottom:16px;">
             <p style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:1px;margin:0 0 14px;font-weight:600;">Ventas del mes</p>
             <table width="100%" cellpadding="6" style="font-size:14px;border-collapse:collapse;">
-              <tr><td style="color:#444;">Total ventas</td><td align="right" style="font-weight:bold;">{fmt(ventas)}</td></tr>
-              <tr><td style="color:#444;">IVA generado (19%)</td><td align="right" style="color:#22c55e;font-weight:bold;">{fmt(iva_ventas)}</td></tr>
+              <tr><td style="color:#444;">Subtotal ventas</td><td align="right">{fmt(ventas)}</td></tr>
+              <tr><td style="color:#444;">IVA ventas</td><td align="right" style="color:#22c55e;">{fmt(iva_ventas)}</td></tr>
+              <tr style="border-top:1px solid #eee;">
+                <td style="color:#111;font-weight:bold;padding-top:8px;">Total ventas</td>
+                <td align="right" style="font-weight:bold;padding-top:8px;">{fmt(total_ventas)}</td>
+              </tr>
             </table>
           </div>
 
           <div style="background:white;border-radius:8px;padding:20px;margin-bottom:16px;">
             <p style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:1px;margin:0 0 14px;font-weight:600;">Compras del mes</p>
             <table width="100%" cellpadding="6" style="font-size:14px;border-collapse:collapse;">
-              <tr><td style="color:#444;">Total compras (subtotal)</td><td align="right" style="font-weight:bold;">{fmt(total_compras)}</td></tr>
-              <tr><td style="color:#444;">IVA descontable</td><td align="right" style="color:#ef4444;">{fmt(total_iva_compras)}</td></tr>
-              <tr><td style="color:#444;">Retefuente facturas</td><td align="right" style="color:#ef4444;">{fmt(total_rete)}</td></tr>
-              {f'<tr><td style="color:#444;">Retefuente gastos</td><td align="right" style="color:#ef4444;">{fmt(rete_arriendos)}</td></tr>' if rete_arriendos > 0 else ''}
-              <tr style="border-top:1px solid #eee;"><td style="color:#111;font-weight:bold;padding-top:8px;">Retefuente total</td><td align="right" style="font-weight:bold;color:#ef4444;padding-top:8px;">{fmt(rete_total)}</td></tr>
+              <tr><td style="color:#444;">Subtotal compras</td><td align="right">{fmt(total_compras)}</td></tr>
+              <tr><td style="color:#444;">Total IVA compras</td><td align="right" style="color:#ef4444;">{fmt(total_iva_compras)}</td></tr>
+              <tr><td style="color:#444;">Retención total de compras</td><td align="right" style="color:#ef4444;">{fmt(total_rete)}</td></tr>
               {f'<tr><td style="color:#444;">Descuentos proveedores</td><td align="right" style="color:#22c55e;">- {fmt(total_descuentos)}</td></tr>' if total_descuentos > 0 else ''}
+              <tr style="border-top:1px solid #eee;">
+                <td style="color:#111;font-weight:bold;padding-top:8px;">Total compras</td>
+                <td align="right" style="font-weight:bold;padding-top:8px;">{fmt(total_compras_neto)}</td>
+              </tr>
             </table>
           </div>
 
           <div style="background:white;border-radius:8px;padding:20px;margin-bottom:16px;">
             <p style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:1px;margin:0 0 14px;font-weight:600;">Arriendos y otros gastos</p>
             <table width="100%" cellpadding="6" style="font-size:14px;border-collapse:collapse;">
-              <tr><td style="color:#444;">Total gastos</td><td align="right" style="font-weight:bold;">{fmt(total_arriendos)}</td></tr>
+              <tr><td style="color:#444;">Subtotal gastos</td><td align="right">{fmt(subtotal_arriendos)}</td></tr>
               <tr><td style="color:#444;">IVA gastos</td><td align="right" style="color:#ef4444;">{fmt(iva_arriendos)}</td></tr>
-              {f'<tr><td style="color:#444;">Retefuente gastos</td><td align="right" style="color:#ef4444;">{fmt(rete_arriendos)}</td></tr>' if rete_arriendos > 0 else ''}
+              <tr><td style="color:#444;">Retefuente gastos</td><td align="right" style="color:#ef4444;">{fmt(rete_arriendos)}</td></tr>
+              <tr style="border-top:1px solid #eee;">
+                <td style="color:#111;font-weight:bold;padding-top:8px;">Total gastos</td>
+                <td align="right" style="font-weight:bold;padding-top:8px;">{fmt(total_arriendos)}</td>
+              </tr>
             </table>
           </div>
 
@@ -2147,6 +2160,18 @@ async def enviar_reporte_mensual(data: dict):
               <tr style="border-top:1px solid #eee;">
                 <td style="color:#111;font-weight:bold;padding-top:10px;">IVA neto a pagar</td>
                 <td align="right" style="font-weight:bold;font-size:16px;color:{color_iva};padding-top:10px;">{fmt(iva_neto)}</td>
+              </tr>
+            </table>
+          </div>
+
+          <div style="background:white;border-radius:8px;padding:20px;margin-bottom:16px;">
+            <p style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:1px;margin:0 0 14px;font-weight:600;">Resumen Retefuentes</p>
+            <table width="100%" cellpadding="6" style="font-size:14px;border-collapse:collapse;">
+              <tr><td style="color:#444;">Retefuente compras</td><td align="right">{fmt(total_rete)}</td></tr>
+              <tr><td style="color:#444;">Retefuente gastos</td><td align="right">{fmt(rete_arriendos)}</td></tr>
+              <tr style="border-top:1px solid #eee;">
+                <td style="color:#111;font-weight:bold;padding-top:10px;">Total retefuentes</td>
+                <td align="right" style="font-weight:bold;font-size:16px;color:#ef4444;padding-top:10px;">{fmt(rete_total)}</td>
               </tr>
             </table>
           </div>
