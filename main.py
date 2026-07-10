@@ -1219,7 +1219,7 @@ async def save_invoice_endpoint(data: dict):
                 "producto_id":                  prod_id,
                 "estado":                       estado,
                 "presentacion_facturada":       line.get("presentacion_facturada"),
-                "costo_presentacion_facturada": float(line.get("costo_caja_sin_iva") or cu),
+                "costo_presentacion_facturada": costo_final,
                 "costo_unidad_anterior":        costo_ant,
                 "costo_unidad_nuevo":           cu,
                 "variacion_porcentaje":         variacion,
