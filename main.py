@@ -608,7 +608,7 @@ def find_similar_product(supabase: Client, proveedor_nit: str, sku: str, nombre:
         "costo_unidad_sin_iva,markup_unidad_pct,markup_paquete_pct,markup_caja_pct,"
         "markup_millar_pct,markup_kg_pct,markup_rollo_pct,markup_metro_pct,"
         "multiplicador_rollo,multiplicador_metro,"
-        "venta_unidad,venta_paquete,venta_caja,venta_millar,venta_kg,venta_rollo,venta_metro,costo_transporte,es_materia_prima"
+        "venta_unidad,venta_paquete,venta_caja,venta_millar,venta_kg,venta_rollo,venta_metro,costo_transporte,es_materia_prima,es_insumo"
     )
     # Resolver el proveedor_id una sola vez -- se necesita en ambos caminos de abajo
     # para no emparejar nunca productos de un proveedor con el codigo de otro.
@@ -868,6 +868,7 @@ async def parse_invoice_endpoint(
                 line["venta_rollo"]            = p.get("venta_rollo") if p.get("venta_rollo") is not None else line.get("venta_rollo", False)
                 line["venta_metro"]            = p.get("venta_metro") if p.get("venta_metro") is not None else line.get("venta_metro", False)
                 line["es_materia_prima"]       = bool(p.get("es_materia_prima"))
+                line["es_insumo"]               = bool(p.get("es_insumo"))
                 line["costo_anterior"]         = float(p.get("costo_unidad_sin_iva") or 0)
 
                 # Aviso no bloqueante: si el emparejamiento fue por codigo de proveedor
@@ -1124,6 +1125,7 @@ async def save_invoice_endpoint(data: dict):
                     "multiplicador_metro":    float(line.get("multiplicador_metro") or 1),
                     "activo":                 True,
                     **({"es_materia_prima": True} if line.get("es_materia_prima") else {}),
+                    **({"es_insumo": True} if line.get("es_insumo") else {}),
                     "venta_unidad":           bool(line.get("venta_unidad")),
                     "venta_paquete":          bool(line.get("venta_paquete")),
                     "venta_caja":             bool(line.get("venta_caja")),
@@ -1189,6 +1191,7 @@ async def save_invoice_endpoint(data: dict):
                     "venta_rollo":            bool(line.get("venta_rollo")),
                     "venta_metro":            bool(line.get("venta_metro")),
                     "es_materia_prima":       bool(line.get("es_materia_prima")),
+                    "es_insumo":              bool(line.get("es_insumo")),
                     "activo":                 True,
                     "ultima_factura":         invoice.get("numero_factura"),
                     "ultima_fecha":           invoice.get("fecha"),
@@ -1265,118 +1268,148 @@ async def save_invoice_endpoint(data: dict):
         # 4. Factura contable
         prov_info  = data.get("proveedor_info", {})
 
-        # Forma de pago: priorizar XML, luego proveedores_contables, default CREDITO
-        forma_pago_xml = invoice.get("forma_pago_xml", "")
-        prov_forma_pago = prov_info.get("forma_pago") or ""
-        # Si el proveedor ya tiene forma de pago configurada, usarla
-        # Solo usar el XML si el proveedor es nuevo o no tiene forma de pago
-        if prov_forma_pago:
-            forma_pago = prov_forma_pago
-        else:
-            forma_pago = forma_pago_xml or "CREDITO"
+        # Una factura donde TODAS las lineas estan marcadas "es_insumo" no es una compra
+        # normal -- se registra como Gasto (arriendos_mensuales) en vez de facturas_contables,
+        # para no inflar "Compras del mes" ni la pestana de Facturas de Contabilidad. Si viene
+        # mezclada (alguna linea sin marcar), se trata como factura normal completa -- nunca se
+        # descarta informacion contable en silencio.
+        todas_insumo = len(lineas) > 0 and all(l.get("es_insumo") for l in lineas)
 
-        # Actualizar forma_pago y requiere_acuse en proveedores_contables si tenemos id
-        # Regla de negocio: el acuse DIAN solo aplica a facturas de CREDITO (no CONTADO, no OTRO)
-        pc_id = prov_info.get("id")
-        if pc_id and forma_pago_xml:
-            try:
-                sb.table("proveedores_contables").update({
-                    "forma_pago": forma_pago,
-                }).eq("id", pc_id).execute()
-            except Exception:
-                pass
+        if not todas_insumo:
+            # Forma de pago: priorizar XML, luego proveedores_contables, default CREDITO
+            forma_pago_xml = invoice.get("forma_pago_xml", "")
+            prov_forma_pago = prov_info.get("forma_pago") or ""
+            # Si el proveedor ya tiene forma de pago configurada, usarla
+            # Solo usar el XML si el proveedor es nuevo o no tiene forma de pago
+            if prov_forma_pago:
+                forma_pago = prov_forma_pago
+            else:
+                forma_pago = forma_pago_xml or "CREDITO"
 
-        # Si proveedor no existe en proveedores_contables, crearlo
-        if not pc_id and nombre:
-            try:
-                nuevo_pc = sb.table("proveedores_contables").insert({
-                    "proveedor_nombre": nombre,
-                    "nit": nit or "",
-                    "forma_pago": forma_pago,
-                    "aplica_retefuente": "NO",
-                    "descuento_pct": 0,
-                    "regimen": "COMUN",
-                    "descuento_afecta_costo": False,
-                }).execute()
-                if nuevo_pc.data:
-                    pc_id = nuevo_pc.data[0]["id"]
-            except Exception as e_insert:
-                # El insert puede fallar por conflict de NIT duplicado u otro error.
-                # Intentamos buscar si ya existe con ese NIT o nombre antes de rendirse.
+            # Actualizar forma_pago y requiere_acuse en proveedores_contables si tenemos id
+            # Regla de negocio: el acuse DIAN solo aplica a facturas de CREDITO (no CONTADO, no OTRO)
+            pc_id = prov_info.get("id")
+            if pc_id and forma_pago_xml:
                 try:
-                    busqueda = None
-                    if nit:
-                        busqueda = sb.table("proveedores_contables").select("id").eq("nit", nit).maybe_single().execute()
-                    if not busqueda or not busqueda.data:
-                        busqueda = sb.table("proveedores_contables").select("id").ilike("proveedor_nombre", nombre).maybe_single().execute()
-                    if busqueda and busqueda.data:
-                        pc_id = busqueda.data["id"]
-                    else:
-                        # Último intento: upsert por NIT
-                        raise Exception(f"No se pudo crear proveedor contable: {str(e_insert)}")
+                    sb.table("proveedores_contables").update({
+                        "forma_pago": forma_pago,
+                    }).eq("id", pc_id).execute()
                 except Exception:
-                    pass  # El proveedor no quedó en contables — se detectará en la próxima verificación
+                    pass
 
-        # Verificación final: si después de todo el proveedor no existe en contables, crearlo
-        if not pc_id and nombre:
-            try:
-                verificar = sb.table("proveedores_contables").select("id").ilike("proveedor_nombre", nombre).maybe_single().execute()
-                if not verificar or not verificar.data:
-                    fallback = sb.table("proveedores_contables").insert({
+            # Si proveedor no existe en proveedores_contables, crearlo
+            if not pc_id and nombre:
+                try:
+                    nuevo_pc = sb.table("proveedores_contables").insert({
                         "proveedor_nombre": nombre,
                         "nit": nit or "",
-                        "forma_pago": "CONTADO",
+                        "forma_pago": forma_pago,
                         "aplica_retefuente": "NO",
                         "descuento_pct": 0,
                         "regimen": "COMUN",
                         "descuento_afecta_costo": False,
                     }).execute()
-                    if fallback.data:
-                        pc_id = fallback.data[0]["id"]
-            except Exception:
-                pass
-        desc_pct   = float(prov_info.get("descuento_pct") or 0)
-        subtotal   = float(invoice.get("subtotal_factura") or 0)
-        iva_val    = float(invoice.get("iva_factura") or 0)
-        valor_desc = round(subtotal * desc_pct / 100, 2)
+                    if nuevo_pc.data:
+                        pc_id = nuevo_pc.data[0]["id"]
+                except Exception as e_insert:
+                    # El insert puede fallar por conflict de NIT duplicado u otro error.
+                    # Intentamos buscar si ya existe con ese NIT o nombre antes de rendirse.
+                    try:
+                        busqueda = None
+                        if nit:
+                            busqueda = sb.table("proveedores_contables").select("id").eq("nit", nit).maybe_single().execute()
+                        if not busqueda or not busqueda.data:
+                            busqueda = sb.table("proveedores_contables").select("id").ilike("proveedor_nombre", nombre).maybe_single().execute()
+                        if busqueda and busqueda.data:
+                            pc_id = busqueda.data["id"]
+                        else:
+                            # Último intento: upsert por NIT
+                            raise Exception(f"No se pudo crear proveedor contable: {str(e_insert)}")
+                    except Exception:
+                        pass  # El proveedor no quedó en contables — se detectará en la próxima verificación
 
-        retefuente_xml = float(invoice.get("retefuente_xml") or 0)
-        aplica_rete    = prov_info.get("aplica_retefuente", "NO")
-        retefuente     = estimar_retefuente(sb, prov_info, subtotal, invoice.get("fecha") or "", retefuente_xml)
+            # Verificación final: si después de todo el proveedor no existe en contables, crearlo
+            if not pc_id and nombre:
+                try:
+                    verificar = sb.table("proveedores_contables").select("id").ilike("proveedor_nombre", nombre).maybe_single().execute()
+                    if not verificar or not verificar.data:
+                        fallback = sb.table("proveedores_contables").insert({
+                            "proveedor_nombre": nombre,
+                            "nit": nit or "",
+                            "forma_pago": "CONTADO",
+                            "aplica_retefuente": "NO",
+                            "descuento_pct": 0,
+                            "regimen": "COMUN",
+                            "descuento_afecta_costo": False,
+                        }).execute()
+                        if fallback.data:
+                            pc_id = fallback.data[0]["id"]
+                except Exception:
+                    pass
+            desc_pct   = float(prov_info.get("descuento_pct") or 0)
+            subtotal   = float(invoice.get("subtotal_factura") or 0)
+            iva_val    = float(invoice.get("iva_factura") or 0)
+            valor_desc = round(subtotal * desc_pct / 100, 2)
 
-        valor_pagar = max(0.0, subtotal + iva_val - valor_desc - retefuente)
+            retefuente_xml = float(invoice.get("retefuente_xml") or 0)
+            aplica_rete    = prov_info.get("aplica_retefuente", "NO")
+            retefuente     = estimar_retefuente(sb, prov_info, subtotal, invoice.get("fecha") or "", retefuente_xml)
 
-        marcar_acuse = bool(data.get("marcar_acuse", False))
+            valor_pagar = max(0.0, subtotal + iva_val - valor_desc - retefuente)
 
-        sb.table("facturas_contables").insert({
-            "factura_id":        factura_id,
-            "proveedor":         nombre,
-            "numero_factura":    invoice.get("numero_factura"),
-            "fecha_factura":     invoice.get("fecha"),
-            "fecha_revision":    str(date.today()),
-            "forma_pago":        forma_pago,
-            "subtotal":          subtotal,
-            "descuento_pct":     desc_pct,
-            "valor_descuento":   valor_desc,
-            "aplica_retefuente": aplica_rete,
-            "retefuente":        retefuente,
-            "iva":               iva_val,
-            "valor_a_pagar":     valor_pagar,
-            "precios_revisados": "NO",
-            "cufe":              invoice.get("cufe", ""),
-            "acuse":             "SI" if marcar_acuse else "NO",
-            "fecha_acuse":       str(date.today()) if marcar_acuse else None,
-        }).execute()
+            marcar_acuse = bool(data.get("marcar_acuse", False))
 
-        if not retefuente_xml:
-            recalcular_retefuente_grupo(sb, nombre, invoice.get("fecha", ""), aplica_rete)
+            sb.table("facturas_contables").insert({
+                "factura_id":        factura_id,
+                "proveedor":         nombre,
+                "numero_factura":    invoice.get("numero_factura"),
+                "fecha_factura":     invoice.get("fecha"),
+                "fecha_revision":    str(date.today()),
+                "forma_pago":        forma_pago,
+                "subtotal":          subtotal,
+                "descuento_pct":     desc_pct,
+                "valor_descuento":   valor_desc,
+                "aplica_retefuente": aplica_rete,
+                "retefuente":        retefuente,
+                "iva":               iva_val,
+                "valor_a_pagar":     valor_pagar,
+                "precios_revisados": "NO",
+                "cufe":              invoice.get("cufe", ""),
+                "acuse":             "SI" if marcar_acuse else "NO",
+                "fecha_acuse":       str(date.today()) if marcar_acuse else None,
+            }).execute()
+
+            if not retefuente_xml:
+                recalcular_retefuente_grupo(sb, nombre, invoice.get("fecha", ""), aplica_rete)
+        else:
+            # Factura 100% de insumos: sigue siendo una compra para efectos de retefuente
+            # (misma formula estimar_retefuente que una factura normal), pero se contabiliza
+            # como Gasto en vez de Compra -- no toca proveedores_contables ni facturas_contables.
+            subtotal       = float(invoice.get("subtotal_factura") or 0)
+            iva_val        = float(invoice.get("iva_factura") or 0)
+            retefuente_xml = float(invoice.get("retefuente_xml") or 0)
+            retefuente     = estimar_retefuente(sb, prov_info, subtotal, invoice.get("fecha") or "", retefuente_xml)
+
+            sb.table("arriendos_mensuales").insert({
+                "mes":        (invoice.get("fecha") or "")[:7],
+                "concepto":   f"{nombre} — Factura {invoice.get('numero_factura')} (insumos)",
+                "subtotal":   subtotal,
+                "iva":        iva_val,
+                "retefuente": retefuente,
+                "total":      subtotal + iva_val - retefuente,
+                "factura_id": factura_id,
+            }).execute()
 
         # Registrar auditoría
         usuario_email  = data.get("usuario_email", "")
         usuario_nombre = data.get("usuario_nombre", "")
         registrar_auditoria(sb,
             accion="GUARDAR_FACTURA", entidad="facturas", entidad_id=str(factura_id),
-            descripcion=f"Factura {invoice.get('numero_factura')} de {nombre} — ${subtotal:,.0f}",
+            descripcion=(
+                f"Factura de insumos {invoice.get('numero_factura')} de {nombre} — ${subtotal:,.0f} (registrada como gasto)"
+                if todas_insumo else
+                f"Factura {invoice.get('numero_factura')} de {nombre} — ${subtotal:,.0f}"
+            ),
             usuario_email=usuario_email, usuario_nombre=usuario_nombre,
         )
 
@@ -2678,6 +2711,10 @@ async def eliminar_factura(factura_id: int, request: Request):
         # (si esta factura sumaba al total que activaba o desactivaba la base mínima)
         if proveedor_fc and fecha_fc:
             recalcular_retefuente_grupo(sb, proveedor_fc, fecha_fc, "SI")
+
+        # 6c. Borrar el Gasto generado automáticamente si esta factura era de insumos
+        # (para facturas normales esto no encuentra nada y no hace nada)
+        sb.table("arriendos_mensuales").delete().eq("factura_id", factura_id).execute()
 
         # 7. Restaurar costo anterior en productos (desde historial previo).
         # Si un producto se queda SIN ningún historial restante, significa que esta
