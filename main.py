@@ -667,14 +667,19 @@ def find_similar_product(supabase: Client, proveedor_nit: str, sku: str, nombre:
                     pass
             return {"match": "Nuevo", "producto": None, "posible_duplicado": posible_duplicado}
         # Compra recurrente de un producto sin código de proveedor: buscar si ya existe
-        # uno de este proveedor con el mismo nombre y sku_proveedor="" para actualizarlo
-        # en vez de crear un duplicado que choque contra la unique constraint. NO filtrar
-        # por activo=True aca -- si el producto quedo inactivo (ej. se borro su unica
-        # factura), la restriccion UNIQUE de la tabla sigue existiendo igual, y guardar
-        # sin encontrarlo revienta con "duplicate key" en vez de reactivarlo.
+        # uno de este proveedor con el mismo nombre para actualizarlo en vez de crear un
+        # duplicado. NO filtrar por sku_proveedor="" aca -- un producto puede haberse
+        # creado originalmente con un codigo real (ej. PQ016) y mas tarde llegar una
+        # factura donde ESE MISMO codigo quedo duplicado dentro de la factura (linea
+        # con "L00X" temporal); si el nombre ya es exacto (con medida incluida, ver
+        # _desc_con_nota) no hay motivo para no reconocerlo solo por el sku_proveedor
+        # guardado. Tampoco filtrar por activo=True -- si el producto quedo inactivo
+        # (ej. se borro su unica factura), la restriccion UNIQUE de la tabla sigue
+        # existiendo igual, y guardar sin encontrarlo revienta con "duplicate key" en
+        # vez de reactivarlo.
         try:
             r = supabase.table("productos").select(SELECT_MATCH_COLS) \
-                .eq("proveedor_id", prov_id).eq("sku_proveedor", "") \
+                .eq("proveedor_id", prov_id) \
                 .eq("nombre_factura", nombre).limit(1).execute()
             if r.data:
                 return {"match": "Exacto", "producto": r.data[0], "via": "nombre"}
@@ -688,7 +693,7 @@ def find_similar_product(supabase: Client, proveedor_nit: str, sku: str, nombre:
         if nombre_norm and nombre_norm != nombre:
             try:
                 candidatos = supabase.table("productos").select(SELECT_MATCH_COLS) \
-                    .eq("proveedor_id", prov_id).eq("sku_proveedor", "").eq("activo", True).execute()
+                    .eq("proveedor_id", prov_id).eq("activo", True).execute()
                 for c in (candidatos.data or []):
                     if _quitar_cantidad_final(c.get("nombre_factura", "")) == nombre_norm:
                         return {"match": "Exacto", "producto": c, "via": "nombre_normalizado"}
