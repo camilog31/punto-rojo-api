@@ -582,6 +582,15 @@ def _es_sku_temporal(sku: str) -> bool:
     no manda un código real. Nunca deben usarse para buscar matches."""
     return bool(re.match(r'^L\d{3}$', (sku or "").strip()))
 
+def _quitar_cantidad_final(nombre: str) -> str:
+    """Algunos proveedores de materia prima (ej. rollos) facturan sin código y
+    ponen al final del nombre, entre paréntesis, una cantidad que varía en cada
+    factura aunque sea el mismo tipo de rollo (ej. la cantidad de bolsas que
+    salieron de ESE rollo puntual: "23.5X31 NEGRO CAL 1.3(3284)" vs "...(3628)").
+    Se usa solo como comparación de respaldo para emparejar -- el nombre guardado
+    en la factura no se toca."""
+    return re.sub(r"\(\d+\)\s*$", "", nombre or "").strip()
+
 def nombres_muy_distintos(nombre_nuevo: str, nombre_guardado: str) -> bool:
     """Compara la descripcion de la linea nueva contra la del producto ya guardado
     cuando el emparejamiento fue por codigo de proveedor (no por nombre). Sirve de
@@ -657,7 +666,35 @@ def find_similar_product(supabase: Client, proveedor_nit: str, sku: str, nombre:
                 return {"match": "Exacto", "producto": r.data[0], "via": "nombre"}
         except Exception:
             pass
-        return {"match": "Nuevo", "producto": None}
+
+        # Respaldo: si el nombre exacto no matcheo, puede ser el mismo producto con
+        # una cantidad final distinta (ver _quitar_cantidad_final) -- comparar
+        # ignorando esa cantidad antes de dar por hecho que es un producto nuevo.
+        nombre_norm = _quitar_cantidad_final(nombre)
+        if nombre_norm and nombre_norm != nombre:
+            try:
+                candidatos = supabase.table("productos").select(SELECT_MATCH_COLS) \
+                    .eq("proveedor_id", prov_id).eq("sku_proveedor", "").eq("activo", True).execute()
+                for c in (candidatos.data or []):
+                    if _quitar_cantidad_final(c.get("nombre_factura", "")) == nombre_norm:
+                        return {"match": "Exacto", "producto": c, "via": "nombre_normalizado"}
+            except Exception:
+                pass
+
+        # Aviso no bloqueante: existe un producto activo con este nombre exacto que no
+        # se emparejo arriba -- puede ser un duplicado real. Antes este camino (proveedor
+        # sin codigo) no tenia ningun aviso de respaldo, a diferencia del camino con
+        # codigo (mas abajo) que si lo tiene.
+        posible_duplicado = None
+        try:
+            rdup = supabase.table("productos").select(
+                "id,sku_interno,nombre_punto_rojo,costo_unidad_sin_iva"
+            ).eq("proveedor_id", prov_id).eq("nombre_factura", nombre).eq("activo", True).limit(1).execute()
+            if rdup.data:
+                posible_duplicado = rdup.data[0]
+        except Exception:
+            pass
+        return {"match": "Nuevo", "producto": None, "posible_duplicado": posible_duplicado}
 
     # Match exacto por SKU del proveedor -- SIEMPRE filtrado por proveedor_id, para que
     # un codigo corto/generico (ej. "1", "2") de un proveedor nunca empareje con el
