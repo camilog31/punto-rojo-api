@@ -261,7 +261,7 @@ def parse_invoice(root: ET.Element) -> dict:
             ""
         )
         raw_skus_por_linea.append(raw_sku)
-        descs_por_linea.append(first_text(line, ["Item","Description"]) or first_text(line, ["Item","Name"]) or "")
+        descs_por_linea.append(_desc_con_nota(line))
         qtys_por_linea.append(parse_decimal(first_text(line, ["InvoicedQuantity"]), 1) or 1)
         precios_por_linea.append(parse_decimal(first_text(line, ["Price","PriceAmount"])))
 
@@ -294,7 +294,7 @@ def parse_invoice(root: ET.Element) -> dict:
 
     for i, line in enumerate(all_descendants(root, "InvoiceLine"), start=1):
         qty      = parse_decimal(first_text(line, ["InvoicedQuantity"]), 1) or 1
-        desc     = first_text(line, ["Item","Description"]) or first_text(line, ["Item","Name"]) or ""
+        desc     = _desc_con_nota(line)
 
         def _id_valido(txt):
             txt = (txt or "").strip()
@@ -581,6 +581,20 @@ def _es_sku_temporal(sku: str) -> bool:
     """SKUs tipo L001, L002... son temporales asignados cuando el proveedor
     no manda un código real. Nunca deben usarse para buscar matches."""
     return bool(re.match(r'^L\d{3}$', (sku or "").strip()))
+
+def _desc_con_nota(line) -> str:
+    """Algunos proveedores (ej. Plastiagro/World Office) usan la misma Description
+    para variantes con distintas medidas (ancho*calibre*largo) y ponen la medida
+    real en el <Note> de la linea (no dentro de <Item>), que la app antes ignoraba
+    por completo -- eso hacia que dos productos DISTINTOS (ej. mismo reciclado pero
+    calibre 6 vs calibre 8) llegaran con el nombre identico y disparen el aviso de
+    "codigo repetido en la misma factura" sin forma de distinguirlos. Se agrega la
+    nota al nombre para que cada medida quede como un producto separado."""
+    desc = first_text(line, ["Item", "Description"]) or first_text(line, ["Item", "Name"]) or ""
+    nota = (first_text(line, ["Note"]) or "").strip()
+    if nota and nota not in desc:
+        return f"{desc} {nota}".strip()
+    return desc
 
 def _quitar_cantidad_final(nombre: str) -> str:
     """Algunos proveedores de materia prima (ej. rollos) facturan sin código y
