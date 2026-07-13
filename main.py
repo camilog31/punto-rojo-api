@@ -1363,8 +1363,8 @@ async def save_invoice_endpoint(data: dict):
                         "proveedor_nombre": nombre,
                         "nit": nit or "",
                         "forma_pago": forma_pago,
-                        "aplica_retefuente": "NO",
-                        "descuento_pct": 0,
+                        "aplica_retefuente": prov_info.get("aplica_retefuente") or "NO",
+                        "descuento_pct": float(prov_info.get("descuento_pct") or 0),
                         "regimen": "COMUN",
                         "descuento_afecta_costo": False,
                     }).execute()
@@ -1395,9 +1395,9 @@ async def save_invoice_endpoint(data: dict):
                         fallback = sb.table("proveedores_contables").insert({
                             "proveedor_nombre": nombre,
                             "nit": nit or "",
-                            "forma_pago": "CONTADO",
-                            "aplica_retefuente": "NO",
-                            "descuento_pct": 0,
+                            "forma_pago": forma_pago,
+                            "aplica_retefuente": prov_info.get("aplica_retefuente") or "NO",
+                            "descuento_pct": float(prov_info.get("descuento_pct") or 0),
                             "regimen": "COMUN",
                             "descuento_afecta_costo": False,
                         }).execute()
