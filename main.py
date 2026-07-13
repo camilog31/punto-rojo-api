@@ -1110,6 +1110,7 @@ async def save_invoice_endpoint(data: dict):
         factura_id = fac.data[0]["id"]
 
         # 3. Insertar/actualizar productos e historial
+        productos_por_linea = []
         for line in lineas:
             prod_id = line.get("producto_id")
 
@@ -1271,6 +1272,8 @@ async def save_invoice_endpoint(data: dict):
                     res = sb.table("productos").insert(producto_payload).execute()
 
                 prod_id = res.data[0]["id"]
+
+            productos_por_linea.append({"linea": line.get("linea"), "producto_id": prod_id})
 
             # Historial de costos
             sb.table("historial_costos").insert({
@@ -1469,7 +1472,11 @@ async def save_invoice_endpoint(data: dict):
             usuario_email=usuario_email, usuario_nombre=usuario_nombre,
         )
 
-        return {"ok": True, "factura_id": factura_id, "mensaje": f"Factura {invoice.get('numero_factura')} guardada correctamente."}
+        return {
+            "ok": True, "factura_id": factura_id,
+            "mensaje": f"Factura {invoice.get('numero_factura')} guardada correctamente.",
+            "productos_por_linea": productos_por_linea,
+        }
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
