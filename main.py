@@ -2032,6 +2032,26 @@ async def crear_producto_derivado(data: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/marcar-materia-prima")
+async def marcar_materia_prima(data: dict):
+    """Endpoint que ya llamaba el frontend (CrearDerivadoModal) al crear un derivado
+    desde un producto existente, para marcarlo automáticamente como materia prima --
+    nunca había existido en el backend (404 silencioso, atrapado por el frontend)."""
+    try:
+        sb = get_supabase()
+        prod_id = data.get("producto_id")
+        if not prod_id:
+            raise HTTPException(status_code=400, detail="producto_id es obligatorio")
+        sb.table("productos").update({
+            "es_materia_prima": bool(data.get("es_materia_prima", True)),
+        }).eq("id", prod_id).execute()
+        return {"ok": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/extract-text")
 async def extract_text(file: UploadFile = File(...)):
     try:
