@@ -2394,7 +2394,7 @@ async def enviar_reporte_costos(data: dict):
             "id,nombre_punto_rojo,sku_interno,categoria,unidades_por_paquete,paquetes_por_caja,unidades_por_caja,"
             "markup_unidad_pct,markup_paquete_pct,markup_caja_pct,markup_millar_pct,markup_kg_pct,markup_rollo_pct,markup_metro_pct,"
             "costo_paquete_sin_iva,costo_caja_sin_iva,venta_unidad,venta_paquete,venta_caja,"
-            "venta_millar,venta_kg,venta_rollo,venta_metro,proveedor_nombre"
+            "venta_millar,venta_kg,venta_rollo,venta_metro,proveedor_nombre,multiplicador_rollo,multiplicador_metro"
         ).in_("id", prod_ids).execute()
 
         facts_res = sb.table("facturas").select("id,numero_factura").in_("id", fact_ids).execute() if fact_ids else type("R", (), {"data": []})()
@@ -2417,6 +2417,8 @@ async def enviar_reporte_costos(data: dict):
             mKg     = p.get("markup_kg_pct") or 40
             mRollo  = p.get("markup_rollo_pct") or 40
             mMetro  = p.get("markup_metro_pct") or 40
+            cRollo  = cu * (p.get("multiplicador_rollo") or 1)
+            cMetro  = cu * (p.get("multiplicador_metro") or 1)
             items.append({
                 "estado":      h.get("estado"),
                 "nombre":      p.get("nombre_punto_rojo") or "—",
@@ -2444,8 +2446,8 @@ async def enviar_reporte_costos(data: dict):
                 "precio_caja":    round(cc * 1.19 * (mc/100) if mc >= 100 else (cc * 1.19) / (1 - mc/100)) if cc else 0,
                 "precio_millar":  round(cu * 1000 * 1.19 * (mMillar/100) if mMillar >= 100 else (cu * 1000 * 1.19) / (1 - mMillar/100)) if cu else 0,
                 "precio_kg":      round(cu * 1.19 * (mKg/100) if mKg >= 100 else (cu * 1.19) / (1 - mKg/100)) if cu else 0,
-                "precio_rollo":   round(cu * 1.19 * (mRollo/100) if mRollo >= 100 else (cu * 1.19) / (1 - mRollo/100)) if cu else 0,
-                "precio_metro":   round(cu * 1.19 * (mMetro/100) if mMetro >= 100 else (cu * 1.19) / (1 - mMetro/100)) if cu else 0,
+                "precio_rollo":   round(cRollo * 1.19 * (mRollo/100) if mRollo >= 100 else (cRollo * 1.19) / (1 - mRollo/100)) if cRollo else 0,
+                "precio_metro":   round(cMetro * 1.19 * (mMetro/100) if mMetro >= 100 else (cMetro * 1.19) / (1 - mMetro/100)) if cMetro else 0,
                 "mu": mu, "mp": mp, "mc": mc,
             })
 
