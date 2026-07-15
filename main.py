@@ -821,6 +821,23 @@ def estimar_retefuente(supabase: Client, prov_info: dict, subtotal: float, fecha
 def root():
     return {"status": "ok", "service": "Punto Rojo API", "version": "1.0.0"}
 
+@app.post("/estimar-retefuente")
+async def estimar_retefuente_endpoint(data: dict):
+    """Recalcula el retefuente estimado bajo demanda -- usado en el preview de
+    Subir Factura cuando se edita 'Aplica retefuente' de un proveedor nuevo
+    (el valor que trae /parse-invoice queda desactualizado en ese caso, porque
+    se calculó antes de que el usuario marcara la casilla)."""
+    try:
+        sb = get_supabase()
+        aplica = data.get("aplica_retefuente") or "NO"
+        subtotal = float(data.get("subtotal") or 0)
+        fecha = data.get("fecha") or ""
+        retefuente_xml = float(data.get("retefuente_xml") or 0)
+        valor = estimar_retefuente(sb, {"aplica_retefuente": aplica}, subtotal, fecha, retefuente_xml)
+        return {"retefuente": valor}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/parse-invoice")
 async def parse_invoice_endpoint(
     file: UploadFile = File(...),
