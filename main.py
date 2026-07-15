@@ -745,14 +745,20 @@ def find_similar_product(supabase: Client, proveedor_nit: str, sku: str, nombre:
         pass
     return {"match": "Nuevo", "producto": None, "posible_duplicado": posible_duplicado}
 
-def check_duplicate(supabase: Client, cufe: str, numero_factura: str) -> bool:
+def check_duplicate(supabase: Client, cufe: str, numero_factura: str, proveedor_nit: str = "") -> bool:
     try:
         if cufe:
             r = supabase.table("facturas").select("id").eq("cufe", cufe).execute()
             if r.data:
                 return True
         if numero_factura:
-            r2 = supabase.table("facturas").select("id").eq("numero_factura", numero_factura).execute()
+            # Escopar tambien por NIT -- dos proveedores distintos pueden coincidir
+            # en el mismo numero de factura (numeracion corta/generica), y sin el
+            # NIT eso dispara un "ya existe" falso que confunde en el preview.
+            q = supabase.table("facturas").select("id").eq("numero_factura", numero_factura)
+            if proveedor_nit:
+                q = q.eq("proveedor_nit", proveedor_nit)
+            r2 = q.execute()
             return bool(r2.data)
         return False
     except Exception:
@@ -786,6 +792,25 @@ def get_proveedor_info(supabase: Client, nit: str, nombre: str) -> dict:
     except Exception:
         pass
     return {}
+
+def _parametros_retefuente_vigente(supabase: Client, fecha_factura: str):
+    """Busca la tarifa/base mínima de retefuente vigente PARA UNA FECHA dada
+    (no la que esté activa hoy) -- compartido con estimar_retefuente y
+    recalcular_retefuente_grupo para que /sincronizar-forma-pago calcule
+    igual que ellos en vez de aplicar siempre la tarifa de hoy a facturas
+    viejas."""
+    try:
+        fecha_factura = fecha_factura or str(date.today())
+        params = supabase.table("parametros_retefuente").select(
+            "porcentaje,base_minima"
+        ).eq("aplica_a", "COMPRAS").eq("activo", True) \
+         .or_(f"vigente_desde.is.null,vigente_desde.lte.{fecha_factura}") \
+         .or_(f"vigente_hasta.is.null,vigente_hasta.gte.{fecha_factura}").limit(1).execute()
+        if params.data:
+            return float(params.data[0].get("porcentaje") or 2.5), float(params.data[0].get("base_minima") or 1148000)
+    except Exception:
+        pass
+    return None
 
 def estimar_retefuente(supabase: Client, prov_info: dict, subtotal: float, fecha_factura: str, retefuente_xml: float = 0.0) -> float:
     """Calcula el retefuente esperado para una factura, igual lógica que /save-invoice.
@@ -877,7 +902,7 @@ async def parse_invoice_endpoint(
 
     try:
         sb = get_supabase()
-        invoice["es_duplicado"] = check_duplicate(sb, invoice["cufe"], invoice["numero_factura"])
+        invoice["es_duplicado"] = check_duplicate(sb, invoice["cufe"], invoice["numero_factura"], invoice.get("proveedor_nit") or "")
         prov_info = get_proveedor_info(sb, invoice["proveedor_nit"] or "", invoice["proveedor"])
         invoice["proveedor_info"] = prov_info
         invoice["retefuente_estimado"] = estimar_retefuente(
@@ -1198,8 +1223,8 @@ async def save_invoice_endpoint(data: dict):
                     "multiplicador_rollo":    float(line.get("multiplicador_rollo") or 1),
                     "multiplicador_metro":    float(line.get("multiplicador_metro") or 1),
                     "activo":                 True,
-                    **({"es_materia_prima": True} if line.get("es_materia_prima") else {}),
-                    **({"es_insumo": True} if line.get("es_insumo") else {}),
+                    "es_materia_prima":       bool(line.get("es_materia_prima")),
+                    "es_insumo":              bool(line.get("es_insumo")),
                     "venta_unidad":           bool(line.get("venta_unidad")),
                     "venta_paquete":          bool(line.get("venta_paquete")),
                     "venta_caja":             bool(line.get("venta_caja")),
@@ -1578,7 +1603,11 @@ async def parse_credit_note_endpoint(file: UploadFile = File(...)):
         try:
             sb = get_supabase()
             if factura_original:
-                r = sb.table("facturas_contables").select("id,subtotal,iva,retefuente,valor_a_pagar,proveedor").eq("numero_factura", factura_original).limit(1).execute()
+                # Filtrar tambien por proveedor (no solo numero_factura) -- dos
+                # proveedores distintos pueden coincidir en el mismo numero de
+                # factura, y la nota credito solo puede pertenecer al proveedor
+                # que la emitio.
+                r = sb.table("facturas_contables").select("id,subtotal,iva,retefuente,valor_a_pagar,proveedor").eq("numero_factura", factura_original).eq("proveedor", supplier).limit(1).execute()
                 if r.data:
                     factura_contable_id = r.data[0]["id"]
                 else:
@@ -2797,8 +2826,12 @@ async def eliminar_factura(factura_id: int, request: Request):
 
         # 5. Borrar notas_credito relacionadas (y capturar proveedor/fecha para
         # recalcular la retefuente del grupo después de borrar, por si esta factura
-        # formaba parte de una suma con otras del mismo proveedor/día)
-        fc = sb.table("facturas_contables").select("id,proveedor,fecha_factura").eq("numero_factura", numero_factura).execute()
+        # formaba parte de una suma con otras del mismo proveedor/día).
+        # Filtrar por factura_id, NO por numero_factura -- dos proveedores distintos
+        # pueden coincidir en el mismo número de factura (numeración corta/genérica),
+        # y borrar por numero_factura borraría también el registro contable del OTRO
+        # proveedor.
+        fc = sb.table("facturas_contables").select("id,proveedor,fecha_factura").eq("factura_id", factura_id).execute()
         proveedor_fc = None
         fecha_fc = None
         if fc.data:
@@ -2807,7 +2840,7 @@ async def eliminar_factura(factura_id: int, request: Request):
             fecha_fc = fc.data[0].get("fecha_factura")
 
         # 6. Borrar factura contable
-        sb.table("facturas_contables").delete().eq("numero_factura", numero_factura).execute()
+        sb.table("facturas_contables").delete().eq("factura_id", factura_id).execute()
 
         # 6b. Recalcular retefuente de las facturas restantes del mismo proveedor/fecha
         # (si esta factura sumaba al total que activaba o desactivaba la base mínima)
@@ -2893,13 +2926,6 @@ async def sincronizar_forma_pago(data: dict):
             if any(p in nombre_f_lower for p in palabras_clave):
                 nombres_match.append(nombre)
 
-        # Obtener parámetros de retefuente activos
-        params_rete = sb.table("parametros_retefuente").select(
-            "porcentaje,base_minima"
-        ).eq("aplica_a", "COMPRAS").eq("activo", True).limit(1).execute()
-        pct_rete = float(params_rete.data[0].get("porcentaje") or 2.5) if params_rete.data else 2.5
-        base_min = float(params_rete.data[0].get("base_minima") or 1148000) if params_rete.data else 1148000
-
         # Armar el update con los campos que vienen
         for nombre in nombres_match:
             update_data = {}
@@ -2927,11 +2953,15 @@ async def sincronizar_forma_pago(data: dict):
                     }).eq("id", f["id"]).execute()
 
             if aplica_retefuente is not None:
-                # Agrupar facturas por fecha y recalcular retefuente
+                # Agrupar facturas por fecha y recalcular retefuente -- la tarifa/base
+                # mínima se busca POR CADA FECHA (vigente en ese momento), no la de hoy,
+                # para no reescribir facturas viejas con una tarifa que no regía entonces.
                 fechas = list({f["fecha_factura"] for f in (facts.data or []) if f.get("fecha_factura")})
                 for fecha in fechas:
                     facts_fecha = [f for f in (facts.data or []) if f.get("fecha_factura") == fecha]
                     total_subtotal = sum(float(f.get("subtotal") or 0) for f in facts_fecha)
+                    parametros = _parametros_retefuente_vigente(sb, fecha)
+                    pct_rete, base_min = parametros if parametros else (0.0, float("inf"))
                     aplica = aplica_retefuente == "SI" and total_subtotal >= base_min
                     for f in facts_fecha:
                         subtotal   = float(f.get("subtotal") or 0)
