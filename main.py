@@ -658,7 +658,8 @@ def find_similar_product(supabase: Client, proveedor_nit: str, sku: str, nombre:
         "costo_unidad_sin_iva,markup_unidad_pct,markup_paquete_pct,markup_caja_pct,"
         "markup_millar_pct,markup_kg_pct,markup_rollo_pct,markup_metro_pct,"
         "multiplicador_rollo,multiplicador_metro,"
-        "venta_unidad,venta_paquete,venta_caja,venta_millar,venta_kg,venta_rollo,venta_metro,costo_transporte,es_materia_prima,es_insumo"
+        "venta_unidad,venta_paquete,venta_caja,venta_millar,venta_kg,venta_rollo,venta_metro,costo_transporte,es_materia_prima,es_insumo,"
+        "presentaciones_extra"
     )
     # Resolver el proveedor_id una sola vez -- se necesita en ambos caminos de abajo
     # para no emparejar nunca productos de un proveedor con el codigo de otro.
@@ -994,6 +995,7 @@ async def parse_invoice_endpoint(
                 line["venta_metro"]            = p.get("venta_metro") if p.get("venta_metro") is not None else line.get("venta_metro", False)
                 line["es_materia_prima"]       = bool(p.get("es_materia_prima"))
                 line["es_insumo"]               = bool(p.get("es_insumo"))
+                line["presentaciones_extra"]   = p.get("presentaciones_extra") or []
                 line["costo_anterior"]         = float(p.get("costo_unidad_sin_iva") or 0)
 
                 # Aviso no bloqueante: si el emparejamiento fue por codigo de proveedor
@@ -1235,6 +1237,13 @@ async def save_invoice_endpoint(data: dict):
                     "costo_unidad_sin_iva":   cu,
                     "costo_paquete_sin_iva":  cp,
                     "costo_caja_sin_iva":     cc,
+                    # El preview permite editar estos 4 campos tambien en lineas Exacto
+                    # (el parse los prellena desde el producto, asi que si no se tocan
+                    # esto reescribe el mismo valor -- inofensivo).
+                    "nombre_punto_rojo":      line.get("nombre_punto_rojo") or line.get("nombre_factura", ""),
+                    "categoria":              line.get("categoria", "") or "",
+                    "subcategoria":           line.get("subcategoria", "") or "",
+                    "presentacion_facturada": pres_s,
                     "unidades_por_paquete":   up,
                     "paquetes_por_caja":      pc,
                     "unidades_por_caja":      uc,
@@ -1264,6 +1273,9 @@ async def save_invoice_endpoint(data: dict):
                     "precio_es_por":          precio_es_por_s,
                     "unidades_por_millar":    upm_s,
                     "iva_porcentaje":         iva_pct_l,
+                    "iva_mode_factura":       iva_mode_s,
+                    "costo_transporte":       transporte,
+                    "presentaciones_extra":   line.get("presentaciones_extra") or [],
                 }).eq("id", prod_id).execute()
 
                 estado = "NUEVO" if costo_ant == 0 else ("SUBIO" if cu > costo_ant else "BAJO" if cu < costo_ant else "SIN_CAMBIO")
@@ -1326,6 +1338,9 @@ async def save_invoice_endpoint(data: dict):
                     "precio_es_por":          precio_es_por_s,
                     "unidades_por_millar":    upm_s,
                     "iva_porcentaje":         iva_pct_l,
+                    "iva_mode_factura":       iva_mode_s,
+                    "costo_transporte":       transporte,
+                    "presentaciones_extra":   line.get("presentaciones_extra") or [],
                 }
 
                 # Si el SKU es real (no vacío), usar upsert con conflict para actualizar
@@ -1671,7 +1686,8 @@ async def toggle_descuento(data: dict):
 
         prod = sb.table("productos").select(
             "precio_factura_base,precio_es_por,descuento_pct_factura,"
-            "unidades_por_paquete,paquetes_por_caja,presentacion_facturada,iva_porcentaje,unidades_por_millar"
+            "unidades_por_paquete,paquetes_por_caja,presentacion_facturada,iva_porcentaje,unidades_por_millar,"
+            "iva_mode_factura,costo_transporte"
         ).eq("id", prod_id).maybe_single().execute()
 
         if not prod.data:
@@ -1686,6 +1702,11 @@ async def toggle_descuento(data: dict):
         pc            = int(p.get("paquetes_por_caja") or 1)
         upm           = int(p.get("unidades_por_millar") or 1000)
         iva_pct       = float(p.get("iva_porcentaje") or IVA_DEFAULT)
+        # precio_factura_base se guarda tal como vino en la factura: si la factura era
+        # con IVA INCLUIDO, el precio base lo trae. Usar el modo guardado en el producto
+        # (antes se asumia NO_INCLUIDO siempre y el costo saltaba +19% al togglear).
+        iva_mode_prod = p.get("iva_mode_factura") or "NO_INCLUIDO"
+        transporte    = float(p.get("costo_transporte") or 0)
 
         if precio_base <= 0:
             raise HTTPException(status_code=400, detail="Este producto no tiene precio base guardado. Sube la factura nuevamente para activar esta función.")
@@ -1694,7 +1715,7 @@ async def toggle_descuento(data: dict):
         if aplicado and desc_pct > 0:
             precio_fact = money(precio_base * (1 - desc_pct / 100))
 
-        costo_base = cost_without_tax(precio_fact, "NO_INCLUIDO", iva_pct)
+        costo_base = cost_without_tax(precio_fact, iva_mode_prod, iva_pct) + transporte
         cu, cp, cc = calc_costs(costo_base, pres, up, pc, precio_es_por, upm)
 
         sb.table("productos").update({
@@ -1738,7 +1759,8 @@ async def recalc_precio_es_por(data: dict):
 
         prod = sb.table("productos").select(
             "precio_factura_base,descuento_pct_factura,descuento_aplicado,"
-            "presentacion_facturada,unidades_por_paquete,paquetes_por_caja,iva_porcentaje,unidades_por_millar"
+            "presentacion_facturada,unidades_por_paquete,paquetes_por_caja,iva_porcentaje,unidades_por_millar,"
+            "iva_mode_factura,costo_transporte"
         ).eq("id", prod_id).maybe_single().execute()
 
         if not prod.data:
@@ -1753,6 +1775,10 @@ async def recalc_precio_es_por(data: dict):
         desc_pct      = float(p.get("descuento_pct_factura") or 0)
         desc_aplicado = bool(p.get("descuento_aplicado") or False)
         iva_pct       = float(p.get("iva_porcentaje") or IVA_DEFAULT)
+        # Mismo fix que en /toggle-descuento: respetar el modo de IVA con que vino la
+        # factura original y el transporte adicional guardado en el producto.
+        iva_mode_prod = p.get("iva_mode_factura") or "NO_INCLUIDO"
+        transporte    = float(p.get("costo_transporte") or 0)
 
         pres_final = pres or p.get("presentacion_facturada") or "Unidad"
         up_final   = up or int(p.get("unidades_por_paquete") or 1)
@@ -1764,7 +1790,7 @@ async def recalc_precio_es_por(data: dict):
         if desc_aplicado and desc_pct > 0:
             precio_fact = money(precio_base * (1 - desc_pct / 100))
 
-        costo_base_val = cost_without_tax(precio_fact, "NO_INCLUIDO", iva_pct)
+        costo_base_val = cost_without_tax(precio_fact, iva_mode_prod, iva_pct) + transporte
 
         # Si no viene precio_es_por, inferir automáticamente
         if not precio_es_por:
