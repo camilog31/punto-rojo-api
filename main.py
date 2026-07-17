@@ -244,6 +244,23 @@ def parse_invoice(root: ET.Element) -> dict:
     total    = parse_decimal(first_text(root, ["LegalMonetaryTotal","PayableAmount"]))
     iva      = money(total - subtotal) if subtotal and total and total >= subtotal else 0.0
 
+    # Descuentos/cargos GLOBALES de la factura (a nivel de cabecera, no de linea).
+    # Sin esto, una factura con descuento global de pie de pagina descuadra la
+    # comparacion subtotal+iva vs total y se detecta "INCLUIDO" por error,
+    # dividiendo TODOS los costos por 1.19. Primero los totales estandar de UBL;
+    # si no vienen, se suman los AllowanceCharge hijos directos del documento
+    # (los de linea viven DENTRO de cada InvoiceLine y no se tocan aqui).
+    descuento_global = parse_decimal(first_text(root, ["LegalMonetaryTotal", "AllowanceTotalAmount"]))
+    cargo_global     = parse_decimal(first_text(root, ["LegalMonetaryTotal", "ChargeTotalAmount"]))
+    if not descuento_global and not cargo_global:
+        for el in root:
+            if local_name(el.tag) == "AllowanceCharge":
+                monto = parse_decimal(first_text(el, ["Amount"]))
+                if (first_text(el, ["ChargeIndicator"]) or "").lower() == "false":
+                    descuento_global += monto
+                else:
+                    cargo_global += monto
+
     lines = []
     def _id_valido(txt):
         txt = (txt or "").strip()
@@ -415,8 +432,17 @@ def parse_invoice(root: ET.Element) -> dict:
                     pass
 
     tolerancia = max(500, total * 0.02)
-    diff_sin_inpusu = abs((subtotal + iva) - total)
-    diff_con_inpusu = abs((subtotal + iva) - (total - inpusu))
+    # Ajuste por descuento/cargo global: solo se aplica si acerca el total esperado
+    # al total real (mismo criterio conservador que el INPUSU, para no cambiar la
+    # deteccion de facturas que hoy cuadran bien sin el ajuste).
+    esperado_base = subtotal + iva
+    esperado_con_global = subtotal - descuento_global + cargo_global + iva
+    if (descuento_global or cargo_global) and abs(esperado_con_global - total) < abs(esperado_base - total):
+        esperado = esperado_con_global
+    else:
+        esperado = esperado_base
+    diff_sin_inpusu = abs(esperado - total)
+    diff_con_inpusu = abs(esperado - (total - inpusu))
     # Solo restar el INPUSU si efectivamente acerca el total (evita falsos "INCLUIDO"
     # cuando el INPUSU es solo informativo y no está sumado al total)
     if inpusu > 0 and diff_con_inpusu < diff_sin_inpusu:
@@ -426,7 +452,7 @@ def parse_invoice(root: ET.Element) -> dict:
 
     iva_detectado = (
         "NO_INCLUIDO"
-        if abs((subtotal + iva) - total_ajustado) < tolerancia
+        if abs(esperado - total_ajustado) < tolerancia
         else "INCLUIDO"
     )
 
@@ -455,6 +481,7 @@ def parse_invoice(root: ET.Element) -> dict:
         "total_factura": money(total),
         "retefuente_xml": money(retefuente_xml),
         "inpusu": money(inpusu),
+        "descuento_global": money(descuento_global),
         "iva_detectado": iva_detectado,
         "forma_pago_xml": forma_pago_xml,
         "lineas": lines,
