@@ -54,6 +54,15 @@ ADMIN_ONLY_PATHS = {
 # donde contabilidad tiene permisos casi iguales a admin salvo Admin general)
 ADMIN_OR_CONTABILIDAD_PREFIXES = (
     "/eliminar-factura/",
+    # Envio de correos (cupo Resend 100/mes) y edicion de productos: son flujos
+    # que en el frontend solo existen en paginas de admin/contabilidad -- sin
+    # esto cualquier rol autenticado podia llamarlos directo con su token.
+    "/enviar-reporte-mensual",
+    "/enviar-reporte-costos",
+    "/toggle-descuento",
+    "/recalc-precio-es-por",
+    "/crear-producto-derivado",
+    "/marcar-materia-prima",
 )
 
 def get_supabase() -> Client:
@@ -100,7 +109,9 @@ async def auth_middleware(request: Request, call_next):
     if user is None:
         return JSONResponse(status_code=401, content={"detail": "No autorizado"})
 
-    requiere_solo_admin = path in ADMIN_ONLY_PATHS
+    # Matching por prefijo tambien para ADMIN_ONLY: "/config-admin/{clave}" (el GET)
+    # quedaba por fuera del match exacto y cualquier rol autenticado podia leer config.
+    requiere_solo_admin = any(path == p or path.startswith(p + "/") for p in ADMIN_ONLY_PATHS)
     requiere_admin_o_contabilidad = any(path.startswith(p) for p in ADMIN_OR_CONTABILIDAD_PREFIXES)
 
     if requiere_solo_admin or requiere_admin_o_contabilidad:
@@ -131,8 +142,30 @@ def first_text(parent, path_names: list) -> str:
     return ""
 
 def parse_decimal(text, default=0.0) -> float:
+    """Convierte montos que pueden venir en formato US (1,234.56) o europeo
+    (1.234,56 / 1234,56). Antes solo se quitaban las comas: '1234,56' se
+    convertia en 123456 (x100) y '1.234,56' caia al default 0 en silencio."""
+    s = str(text or "").strip()
+    if not s:
+        return float(default)
     try:
-        return float(str(text or "").replace(",", "").strip())
+        if "," in s and "." in s:
+            # El separador que aparece mas a la DERECHA es el decimal
+            if s.rfind(",") > s.rfind("."):
+                s = s.replace(".", "").replace(",", ".")   # 1.234,56 -> 1234.56
+            else:
+                s = s.replace(",", "")                     # 1,234.56 -> 1234.56
+        elif "," in s:
+            entero, _, frac = s.rpartition(",")
+            # Una coma con exactamente 3 digitos despues y algo antes es separador
+            # de miles (53,432); si no, es coma decimal europea (1234,56 / 0,5)
+            if len(frac) == 3 and entero and "," not in entero:
+                s = s.replace(",", "")
+            elif "," in entero:
+                s = s.replace(",", "")                     # 1,234,567
+            else:
+                s = s.replace(",", ".")
+        return float(s)
     except Exception:
         return float(default)
 
@@ -142,6 +175,16 @@ def money(value) -> float:
         return float(d.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
     except Exception:
         return 0.0
+
+def num_o_default(val, default) -> float:
+    """float(val) respetando el 0 explicito. El patron `or default` convertia un
+    markup 0 (vender al costo) en el default 40/35/31.58 silenciosamente."""
+    try:
+        if val is None or str(val).strip() == "":
+            return float(default)
+        return float(val)
+    except Exception:
+        return float(default)
 
 def extract_invoice_xml(raw_xml: bytes) -> ET.Element:
     text = raw_xml.decode("utf-8", errors="replace")
@@ -339,9 +382,12 @@ def parse_invoice(root: ET.Element) -> dict:
         for ac in all_descendants(line, "AllowanceCharge"):
             charge_ind = first_text(ac, ["ChargeIndicator"])
             if charge_ind.lower() == "false":
-                desc_amt = parse_decimal(first_text(ac, ["Amount"]))
-                desc_pct = parse_decimal(first_text(ac, ["MultiplierFactorNumeric"]))
-                base_amt = parse_decimal(first_text(ac, ["BaseAmount"]))
+                # SUMAR (no sobreescribir): una linea puede traer varios descuentos
+                # (comercial + pronto pago) y antes solo sobrevivia el ultimo.
+                desc_amt += parse_decimal(first_text(ac, ["Amount"]))
+                desc_pct += parse_decimal(first_text(ac, ["MultiplierFactorNumeric"]))
+                if not base_amt:
+                    base_amt = parse_decimal(first_text(ac, ["BaseAmount"]))
 
         # precio_unitario_factura: precio BRUTO por unidad, antes de cualquier descuento de línea.
         # - Si hay descuento de línea, usamos BaseAmount/qty (consistente y confiable entre
@@ -361,6 +407,19 @@ def parse_invoice(root: ET.Element) -> dict:
         line_iva = 0.0
         iva_pct  = IVA_DEFAULT
         for ta in all_descendants(line, "TaxTotal"):
+            # Solo contar IVA de verdad (TaxScheme ID 01). Antes se sumaba
+            # cualquier impuesto de la linea (INC/IBUA/impoconsumo) como si fuera
+            # IVA, y iva_porcentaje podia quedar con el % del impuesto equivocado
+            # (con modo INCLUIDO el costo se dividia por 1.08 en vez de 1.19).
+            # Si la linea no trae TaxScheme (XML minimo), se asume IVA como antes.
+            tax_id = ""
+            tax_name = ""
+            for sc in all_descendants(ta, "TaxScheme"):
+                tax_id = first_text(sc, ["ID"]) or tax_id
+                tax_name = (first_text(sc, ["Name"]) or tax_name).upper()
+            es_iva = (tax_id == "01") or ("IVA" in tax_name) or (not tax_id and not tax_name)
+            if not es_iva:
+                continue
             line_iva += parse_decimal(first_text(ta, ["TaxAmount"]))
             pct = parse_decimal(first_text(ta, ["TaxSubtotal","TaxCategory","Percent"]), 0)
             if pct: iva_pct = pct
@@ -456,19 +515,30 @@ def parse_invoice(root: ET.Element) -> dict:
         else "INCLUIDO"
     )
 
-    # Forma de pago desde XML
-    payment_code = first_text(root, ["PaymentMeans", "PaymentMeansCode"]) or ""
-    due_date = first_text(root, ["PaymentMeans", "PaymentDueDate"]) or ""
+    # Forma de pago desde XML. PaymentMeans/ID es el campo DIAN real de forma de
+    # pago (1=contado, 2=credito); PaymentMeansCode es solo el MEDIO (10=efectivo,
+    # 48/49=tarjeta...). Antes el medio ganaba: una factura a credito pagadera en
+    # efectivo (code=10) con vencimiento a 30 dias quedaba CONTADO y no exigia acuse.
+    payment_id   = (first_text(root, ["PaymentMeans", "ID"]) or "").strip()
+    payment_code = (first_text(root, ["PaymentMeans", "PaymentMeansCode"]) or "").strip()
+    due_date   = first_text(root, ["PaymentMeans", "PaymentDueDate"]) or ""
     issue_date = first_text(root, ["IssueDate"]) or ""
     CONTADO_CODES = {"10", "48", "49"}
-    if payment_code.strip() in CONTADO_CODES:
-        forma_pago_xml = "CONTADO"
-    elif due_date and issue_date and due_date > issue_date:
+    vence_despues = bool(due_date and issue_date and due_date > issue_date)
+    if payment_id == "2":
         forma_pago_xml = "CREDITO"
-    elif payment_code.strip() == "1" and (not due_date or due_date == issue_date):
+    elif vence_despues:
+        # Un vencimiento posterior a la emision es credito real, declare lo que
+        # declare el medio de pago (regla ya documentada para PaymentMeansCode=1)
+        forma_pago_xml = "CREDITO"
+    elif payment_id == "1":
+        forma_pago_xml = "CONTADO"
+    elif payment_code in CONTADO_CODES:
+        forma_pago_xml = "CONTADO"
+    elif payment_code == "1" and (not due_date or due_date == issue_date):
         forma_pago_xml = "CONTADO"
     else:
-        forma_pago_xml = "CREDITO" if payment_code.strip() else ""
+        forma_pago_xml = "CREDITO" if payment_code else ""
 
     return {
         "proveedor": supplier,
@@ -567,9 +637,9 @@ def add_calcs(lines: list, iva_mode: str) -> list:
         pc   = max(int(l.get("paquetes_por_caja") or 1), 1)
         uc   = max(up * pc, 1)
         pres = l.get("presentacion_facturada", "Unidad")
-        mu   = float(l.get("markup_unidad_pct") or 40)
-        mp   = float(l.get("markup_paquete_pct") or 35)
-        mc   = float(l.get("markup_caja_pct") or 31.58)
+        mu   = num_o_default(l.get("markup_unidad_pct"), 40)
+        mp   = num_o_default(l.get("markup_paquete_pct"), 35)
+        mc   = num_o_default(l.get("markup_caja_pct"), 31.58)
 
         precio_fact = l.get("precio_unitario_factura") or (l.get("subtotal_linea", 0) / max(l.get("cantidad_facturada", 1), 1))
         desc_pct = float(l.get("descuento_factura_pct") or 0)
@@ -908,7 +978,22 @@ async def parse_invoice_endpoint(
                 xml_names = [n for n in z.namelist() if n.lower().endswith(".xml") and not n.lower().startswith("__")]
                 if not xml_names:
                     raise HTTPException(status_code=400, detail="El ZIP no contiene archivos XML.")
-                raw_xml = z.read(xml_names[0])
+                # Elegir el XML que de verdad es la FACTURA (tiene InvoiceLine), no el
+                # primero de la lista: un ZIP DIAN puede traer ApplicationResponse o
+                # CreditNote primero, que antes se parseaba como factura vacia
+                # ("PROVEEDOR SIN NOMBRE", 0 lineas) y hasta se podia guardar asi.
+                raw_xml = None
+                for n in xml_names:
+                    candidato = z.read(n)
+                    try:
+                        root_c = extract_invoice_xml(candidato)
+                        if local_name(root_c.tag) == "Invoice" or any(True for _ in all_descendants(root_c, "InvoiceLine")):
+                            raw_xml = candidato
+                            break
+                    except Exception:
+                        continue
+                if raw_xml is None:
+                    raw_xml = z.read(xml_names[0])
                 pdf_names = [n for n in z.namelist() if n.lower().endswith(".pdf")]
                 if pdf_names:
                     import base64 as b64lib
@@ -1249,13 +1334,13 @@ async def save_invoice_endpoint(data: dict):
                     "unidades_por_caja":      uc,
                     "ultima_factura":         invoice.get("numero_factura"),
                     "ultima_fecha":           invoice.get("fecha"),
-                    "markup_unidad_pct":      float(line.get("markup_unidad_pct") or 40),
-                    "markup_paquete_pct":     float(line.get("markup_paquete_pct") or 35),
-                    "markup_caja_pct":        float(line.get("markup_caja_pct") or 31.58),
-                    "markup_millar_pct":      float(line.get("markup_millar_pct") or 40),
-                    "markup_kg_pct":          float(line.get("markup_kg_pct") or 40),
-                    "markup_rollo_pct":       float(line.get("markup_rollo_pct") or 40),
-                    "markup_metro_pct":       float(line.get("markup_metro_pct") or 40),
+                    "markup_unidad_pct":      num_o_default(line.get("markup_unidad_pct"), 40),
+                    "markup_paquete_pct":     num_o_default(line.get("markup_paquete_pct"), 35),
+                    "markup_caja_pct":        num_o_default(line.get("markup_caja_pct"), 31.58),
+                    "markup_millar_pct":      num_o_default(line.get("markup_millar_pct"), 40),
+                    "markup_kg_pct":          num_o_default(line.get("markup_kg_pct"), 40),
+                    "markup_rollo_pct":       num_o_default(line.get("markup_rollo_pct"), 40),
+                    "markup_metro_pct":       num_o_default(line.get("markup_metro_pct"), 40),
                     "multiplicador_rollo":    float(line.get("multiplicador_rollo") or 1),
                     "multiplicador_metro":    float(line.get("multiplicador_metro") or 1),
                     "activo":                 True,
@@ -1312,13 +1397,13 @@ async def save_invoice_endpoint(data: dict):
                     "costo_unidad_sin_iva":   cu,
                     "costo_paquete_sin_iva":  cp,
                     "costo_caja_sin_iva":     cc,
-                    "markup_unidad_pct":      float(line.get("markup_unidad_pct") or 40),
-                    "markup_paquete_pct":     float(line.get("markup_paquete_pct") or 35),
-                    "markup_caja_pct":        float(line.get("markup_caja_pct") or 31.58),
-                    "markup_millar_pct":      float(line.get("markup_millar_pct") or 40),
-                    "markup_kg_pct":          float(line.get("markup_kg_pct") or 40),
-                    "markup_rollo_pct":       float(line.get("markup_rollo_pct") or 40),
-                    "markup_metro_pct":       float(line.get("markup_metro_pct") or 40),
+                    "markup_unidad_pct":      num_o_default(line.get("markup_unidad_pct"), 40),
+                    "markup_paquete_pct":     num_o_default(line.get("markup_paquete_pct"), 35),
+                    "markup_caja_pct":        num_o_default(line.get("markup_caja_pct"), 31.58),
+                    "markup_millar_pct":      num_o_default(line.get("markup_millar_pct"), 40),
+                    "markup_kg_pct":          num_o_default(line.get("markup_kg_pct"), 40),
+                    "markup_rollo_pct":       num_o_default(line.get("markup_rollo_pct"), 40),
+                    "markup_metro_pct":       num_o_default(line.get("markup_metro_pct"), 40),
                     "multiplicador_rollo":    float(line.get("multiplicador_rollo") or 1),
                     "multiplicador_metro":    float(line.get("multiplicador_metro") or 1),
                     "venta_unidad":           bool(line.get("venta_unidad")),
@@ -1376,13 +1461,13 @@ async def save_invoice_endpoint(data: dict):
                 "venta_kg":                     bool(line.get("venta_kg")),
                 "venta_rollo":                  bool(line.get("venta_rollo")),
                 "venta_metro":                  bool(line.get("venta_metro")),
-                "markup_unidad_pct":            float(line.get("markup_unidad_pct") or 40),
-                "markup_paquete_pct":           float(line.get("markup_paquete_pct") or 35),
-                "markup_caja_pct":              float(line.get("markup_caja_pct") or 31.58),
-                "markup_millar_pct":            float(line.get("markup_millar_pct") or 40),
-                "markup_kg_pct":                float(line.get("markup_kg_pct") or 40),
-                "markup_rollo_pct":             float(line.get("markup_rollo_pct") or 40),
-                "markup_metro_pct":             float(line.get("markup_metro_pct") or 40),
+                "markup_unidad_pct":            num_o_default(line.get("markup_unidad_pct"), 40),
+                "markup_paquete_pct":           num_o_default(line.get("markup_paquete_pct"), 35),
+                "markup_caja_pct":              num_o_default(line.get("markup_caja_pct"), 31.58),
+                "markup_millar_pct":            num_o_default(line.get("markup_millar_pct"), 40),
+                "markup_kg_pct":                num_o_default(line.get("markup_kg_pct"), 40),
+                "markup_rollo_pct":             num_o_default(line.get("markup_rollo_pct"), 40),
+                "markup_metro_pct":             num_o_default(line.get("markup_metro_pct"), 40),
                 "precio_factura_original":      precio_fact_base,
                 "precio_es_por":                precio_es_por_s,
                 "nota":                         (line.get("nota") or "").strip() or None,
@@ -2243,8 +2328,8 @@ async def extract_lista(file: UploadFile = File(...)):
                     texto = f"Error: {e}"
             elif ext in ("docx", "doc"):
                 try:
-                    import docxlib
-                    doc = docxlib.Document(io.BytesIO(data))
+                    import docx
+                    doc = docx.Document(io.BytesIO(data))
                     lineas = [p.text for p in doc.paragraphs if p.text.strip()]
                     texto = "\n".join(lineas)
                 except Exception as e:
@@ -2831,6 +2916,12 @@ async def unificar_productos(data: UnificarProductosRequest, request: Request):
 
         sb.table("historial_costos").update({"producto_id": data.sobrevive_id}).eq("producto_id", data.duplicado_id).execute()
         sb.table("historial_descuentos").update({"producto_id": data.sobrevive_id}).eq("producto_id", data.duplicado_id).execute()
+        # Reasignar los derivados que apuntan al duplicado como materia prima --
+        # si no, quedan con la referencia colgando y su auto-recalculo muere.
+        reasignados = sb.table("productos").update({"materia_prima_id": data.sobrevive_id}).eq("materia_prima_id", data.duplicado_id).execute()
+        if reasignados.data:
+            # El sobreviviente hereda el rol de materia prima si absorbio derivados
+            sb.table("productos").update({"es_materia_prima": True}).eq("id", data.sobrevive_id).execute()
         sb.table("productos").delete().eq("id", data.duplicado_id).execute()
 
         usuario_email  = request.headers.get("X-Usuario-Email", "")
@@ -3039,16 +3130,23 @@ async def sincronizar_forma_pago(data: dict):
 
 
 @app.post("/registrar-auditoria")
-async def registrar_auditoria_endpoint(data: dict):
+async def registrar_auditoria_endpoint(data: dict, request: Request):
     """Endpoint para que el frontend registre acciones de auditoría."""
     try:
         sb = get_supabase()
+        # La identidad sale del token ya validado por el middleware, NUNCA del body:
+        # si no, cualquier usuario autenticado podia registrar acciones a nombre de
+        # otro (auditoria falsificable). El nombre visible si puede venir del body.
+        auth_header = request.headers.get("Authorization", "")
+        token = auth_header.replace("Bearer ", "").strip() if auth_header.startswith("Bearer ") else ""
+        user = get_user_from_token(token)
+        email_real = (user.email or "") if user else ""
         registrar_auditoria(sb,
             accion=data.get("accion", ""),
             entidad=data.get("entidad", ""),
             entidad_id=data.get("entidad_id", ""),
             descripcion=data.get("descripcion", ""),
-            usuario_email=data.get("usuario_email", ""),
+            usuario_email=email_real or data.get("usuario_email", ""),
             usuario_nombre=data.get("usuario_nombre", ""),
             datos_anteriores=data.get("datos_anteriores"),
             datos_nuevos=data.get("datos_nuevos"),
