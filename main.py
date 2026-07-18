@@ -1173,8 +1173,11 @@ def generate_sku(supabase: Client, categoria: str) -> str:
             m = re.match(rf"^{re.escape(prefix)}-(\d+)$", row.get("sku_interno") or "")
             if m:
                 max_num = max(max_num, int(m.group(1)))
-    except Exception:
-        pass
+    except Exception as e:
+        # Si la consulta falla NO seguir con max_num=0: devolveria PREFIX-0001
+        # (probablemente ya existente) y el insert reventaria con un
+        # "duplicate key" confuso. Mejor fallar aqui con la causa real.
+        raise HTTPException(status_code=500, detail=f"No se pudo generar el SKU interno: {e}")
     return f"{prefix}-{str(max_num + 1).zfill(4)}"
 
 
@@ -1908,6 +1911,23 @@ async def recalc_precio_es_por(data: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _select_paginado(sb, tabla: str, columnas: str, filtros=None, chunk: int = 1000) -> list:
+    """SELECT en bloques de 1000: Supabase corta en 1000 filas por defecto, asi
+    que con >1000 productos activos /categorias y /todas-subcategorias omitian
+    categorias en silencio."""
+    filas = []
+    desde = 0
+    while True:
+        q = sb.table(tabla).select(columnas)
+        for f in (filtros or []):
+            q = q.eq(*f)
+        r = q.range(desde, desde + chunk - 1).execute()
+        lote = r.data or []
+        filas.extend(lote)
+        if len(lote) < chunk:
+            return filas
+        desde += chunk
+
 # ─── Materias primas y productos derivados ───────────────────────────────────
 
 @app.get("/materias-primas")
@@ -1928,10 +1948,10 @@ async def listar_categorias():
     """Lista categorías únicas ordenadas por categorias_orden.orden, luego alfabético."""
     try:
         sb = get_supabase()
-        # Obtener categorías de productos
-        r = sb.table("productos").select("categoria").eq("activo", True).execute()
+        # Obtener categorías de productos (paginado: >1000 productos truncaba)
+        filas = _select_paginado(sb, "productos", "categoria", [("activo", True)])
         cats_productos = set()
-        for row in (r.data or []):
+        for row in filas:
             cat = (row.get("categoria") or "").strip()
             if cat:
                 cats_productos.add(cat)
@@ -1940,25 +1960,29 @@ async def listar_categorias():
         orden_r = sb.table("categorias_orden").select("nombre,orden").execute()
         orden_map = {row["nombre"]: row["orden"] for row in (orden_r.data or [])}
 
-        # Registrar categorías nuevas que no están en categorias_orden -- insertadas
-        # en su posición alfabética dentro del orden actual, no siempre al final,
-        # igual que ya hace el botón "Crear categoría" en Admin.
+        # Registrar categorías nuevas que no están en categorias_orden, en su
+        # posición alfabética. Solo se ESCRIBEN las filas nuevas (con un orden
+        # intermedio entre sus vecinas): antes se renumeraban TODAS las filas,
+        # y un GET concurrente podia pisar un reordenamiento drag&drop recien
+        # guardado desde Admin.
         nuevas = [c for c in cats_productos if c not in orden_map]
-        if nuevas:
-            lista_actual = [n for n, _ in sorted(orden_map.items(), key=lambda kv: kv[1])]
-            for nueva in sorted(nuevas):
-                pos = len(lista_actual)
-                for idx, nombre_existente in enumerate(lista_actual):
-                    if nombre_existente.upper() > nueva.upper():
-                        pos = idx
-                        break
-                lista_actual.insert(pos, nueva)
+        for nueva in sorted(nuevas):
             try:
-                for i, nombre in enumerate(lista_actual):
-                    nuevo_orden = (i + 1) * 10
-                    if orden_map.get(nombre) != nuevo_orden:
-                        sb.table("categorias_orden").upsert({"nombre": nombre, "orden": nuevo_orden}, on_conflict="nombre").execute()
-                    orden_map[nombre] = nuevo_orden
+                lista_actual = sorted(orden_map.items(), key=lambda kv: kv[1])
+                prev_orden, next_orden = 0, None
+                for nombre_existente, o in lista_actual:
+                    if nombre_existente.upper() > nueva.upper():
+                        next_orden = o
+                        break
+                    prev_orden = o
+                if next_orden is None:
+                    nuevo_orden = prev_orden + 10
+                elif next_orden - prev_orden > 1:
+                    nuevo_orden = (prev_orden + next_orden) // 2
+                else:
+                    nuevo_orden = next_orden  # sin hueco: comparte orden y desempata alfabetico
+                sb.table("categorias_orden").upsert({"nombre": nueva, "orden": nuevo_orden}, on_conflict="nombre").execute()
+                orden_map[nueva] = nuevo_orden
             except Exception:
                 pass
 
@@ -1979,13 +2003,13 @@ async def listar_subcategorias(categoria: str = ""):
     """Lista subcategorías únicas de una categoría específica."""
     try:
         sb = get_supabase()
-        q = sb.table("productos").select("subcategoria").eq("activo", True)
+        filtros = [("activo", True)]
         if categoria:
-            q = q.eq("categoria", categoria)
-        r = q.execute()
+            filtros.append(("categoria", categoria))
+        filas = _select_paginado(sb, "productos", "subcategoria", filtros)
         vistas = set()
         subcategorias = []
-        for row in (r.data or []):
+        for row in filas:
             sub = (row.get("subcategoria") or "").strip()
             if sub and sub.upper() not in vistas:
                 vistas.add(sub.upper())
@@ -2001,9 +2025,9 @@ async def listar_todas_subcategorias():
     """Devuelve todas las subcategorías agrupadas por categoría en una sola query."""
     try:
         sb = get_supabase()
-        r = sb.table("productos").select("categoria,subcategoria").eq("activo", True).execute()
+        filas = _select_paginado(sb, "productos", "categoria,subcategoria", [("activo", True)])
         mapa: dict = {}
-        for row in (r.data or []):
+        for row in filas:
             cat = (row.get("categoria") or "").strip()
             sub = (row.get("subcategoria") or "").strip()
             if cat and sub:
