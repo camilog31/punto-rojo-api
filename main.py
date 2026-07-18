@@ -921,19 +921,23 @@ def estimar_retefuente(supabase: Client, prov_info: dict, subtotal: float, fecha
         return 0.0
     try:
         fecha_factura = fecha_factura or str(date.today())
-        # vigente_desde / vigente_hasta pueden quedar vacíos cuando el parámetro está
-        # activo sin fecha de inicio/corte definida — un NULL en cualquiera de las dos
-        # columnas no debe excluir el registro.
-        params = supabase.table("parametros_retefuente").select(
-            "porcentaje,base_minima"
-        ).eq("aplica_a", "COMPRAS").eq("activo", True) \
-         .or_(f"vigente_desde.is.null,vigente_desde.lte.{fecha_factura}") \
-         .or_(f"vigente_hasta.is.null,vigente_hasta.gte.{fecha_factura}").limit(1).execute()
-        if params.data:
-            pct_rete = float(params.data[0].get("porcentaje") or 2.5)
-            base_min = float(params.data[0].get("base_minima") or 1148000)
+        parametros = _parametros_retefuente_vigente(supabase, fecha_factura)
+        if parametros:
+            pct_rete, base_min = parametros
             if subtotal >= base_min:
                 return round(subtotal * pct_rete / 100, 2)
+            # ACUMULADO por proveedor+fecha: dos facturas del mismo dia que por
+            # separado no llegan a la base minima pueden cumplirla SUMADAS (la
+            # misma regla que recalcular_retefuente_grupo aplica al guardar).
+            # Sin esto, el preview de la segunda factura mostraba retefuente $0
+            # y un "Total a pagar" mas alto que el real.
+            proveedor_nombre = (prov_info.get("proveedor_nombre") or "").strip()
+            if proveedor_nombre:
+                hermanas = supabase.table("facturas_contables").select("subtotal") \
+                    .eq("proveedor", proveedor_nombre).eq("fecha_factura", fecha_factura).execute()
+                acumulado = sum(float(f.get("subtotal") or 0) for f in (hermanas.data or []))
+                if acumulado + subtotal >= base_min:
+                    return round(subtotal * pct_rete / 100, 2)
     except Exception:
         pass
     return 0.0
@@ -956,7 +960,13 @@ async def estimar_retefuente_endpoint(data: dict):
         subtotal = float(data.get("subtotal") or 0)
         fecha = data.get("fecha") or ""
         retefuente_xml = float(data.get("retefuente_xml") or 0)
-        valor = estimar_retefuente(sb, {"aplica_retefuente": aplica}, subtotal, fecha, retefuente_xml)
+        # proveedor_nombre habilita la regla de ACUMULADO por proveedor+fecha
+        # (facturas del mismo dia que solo sumadas llegan a la base minima)
+        prov_info = {
+            "aplica_retefuente": aplica,
+            "proveedor_nombre": data.get("proveedor_nombre") or "",
+        }
+        valor = estimar_retefuente(sb, prov_info, subtotal, fecha, retefuente_xml)
         return {"retefuente": valor}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
