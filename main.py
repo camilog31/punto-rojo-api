@@ -2612,7 +2612,8 @@ async def enviar_reporte_costos(data: dict):
             "id,nombre_punto_rojo,sku_interno,categoria,unidades_por_paquete,paquetes_por_caja,unidades_por_caja,"
             "markup_unidad_pct,markup_paquete_pct,markup_caja_pct,markup_millar_pct,markup_kg_pct,markup_rollo_pct,markup_metro_pct,"
             "costo_paquete_sin_iva,costo_caja_sin_iva,venta_unidad,venta_paquete,venta_caja,"
-            "venta_millar,venta_kg,venta_rollo,venta_metro,proveedor_nombre,multiplicador_rollo,multiplicador_metro"
+            "venta_millar,venta_kg,venta_rollo,venta_metro,proveedor_nombre,multiplicador_rollo,multiplicador_metro,"
+            "presentaciones_extra"
         ).in_("id", prod_ids).execute()
 
         facts_res = sb.table("facturas").select("id,numero_factura").in_("id", fact_ids).execute() if fact_ids else type("R", (), {"data": []})()
@@ -2626,8 +2627,10 @@ async def enviar_reporte_costos(data: dict):
             p = prods_map.get(h["producto_id"], {})
             f = facts_map.get(h.get("factura_id"), {})
             cu = h.get("costo_unidad_nuevo") or 0
-            cp = p.get("costo_paquete_sin_iva") or cu * (p.get("unidades_por_paquete") or 1)
-            cc = p.get("costo_caja_sin_iva") or cu * (p.get("unidades_por_caja") or 1)
+            up = p.get("unidades_por_paquete") or 1
+            uc = p.get("unidades_por_caja") or 1
+            cp = p.get("costo_paquete_sin_iva") or cu * up
+            cc = p.get("costo_caja_sin_iva") or cu * uc
             mu = p.get("markup_unidad_pct") or 40
             mp = p.get("markup_paquete_pct") or 35
             mc = p.get("markup_caja_pct") or 31.58
@@ -2637,6 +2640,35 @@ async def enviar_reporte_costos(data: dict):
             mMetro  = p.get("markup_metro_pct") or 40
             cRollo  = cu * (p.get("multiplicador_rollo") or 1)
             cMetro  = cu * (p.get("multiplicador_metro") or 1)
+            # Solo las presentaciones que el producto realmente vende (como en
+            # la pagina de Historial y el panel de producto), cada una con SU
+            # costo y SU precio de venta — no la presentacion facturada fija.
+            presentaciones = []
+            if p.get("venta_unidad") and cu:
+                presentaciones.append({"label": "Unidad",       "costo": cu,        "precio": sale_price(cu, mu)})
+            if p.get("venta_paquete") and cp:
+                presentaciones.append({"label": f"Paq x{up}",   "costo": cp,        "precio": sale_price(cp, mp)})
+            if p.get("venta_caja") and cc:
+                presentaciones.append({"label": f"Caja x{uc}",  "costo": cc,        "precio": sale_price(cc, mc)})
+            if p.get("venta_millar") and cu:
+                presentaciones.append({"label": "Millar",       "costo": cu * 1000, "precio": sale_price(cu * 1000, mMillar)})
+            if p.get("venta_kg") and cu:
+                presentaciones.append({"label": "Kg",           "costo": cu,        "precio": sale_price(cu, mKg)})
+            if p.get("venta_rollo") and cRollo:
+                presentaciones.append({"label": "Rollo",        "costo": cRollo,    "precio": sale_price(cRollo, mRollo)})
+            if p.get("venta_metro") and cMetro:
+                presentaciones.append({"label": "Metro",        "costo": cMetro,    "precio": sale_price(cMetro, mMetro)})
+            extras = p.get("presentaciones_extra") or []
+            if isinstance(extras, list):
+                for ex in extras:
+                    if not isinstance(ex, dict):
+                        continue
+                    costo_ex = cu * (ex.get("multiplicador") or 1)
+                    mk_ex = ex.get("markup_pct") if ex.get("markup_pct") is not None else mu
+                    if costo_ex:
+                        presentaciones.append({"label": ex.get("nombre") or "Extra", "costo": costo_ex, "precio": sale_price(costo_ex, mk_ex)})
+            if not presentaciones and cu:
+                presentaciones.append({"label": "Unidad", "costo": cu, "precio": sale_price(cu, mu)})
             items.append({
                 "estado":      h.get("estado"),
                 "nombre":      p.get("nombre_punto_rojo") or "—",
@@ -2647,26 +2679,8 @@ async def enviar_reporte_costos(data: dict):
                 "nota":        h.get("nota") or "",
                 "costo_ant":   h.get("costo_unidad_anterior") or 0,
                 "costo_nuevo": cu,
-                "costo_presentacion": h.get("costo_presentacion_facturada") or cu,
-                "presentacion": h.get("presentacion_facturada") or "Unidad",
                 "variacion":   h.get("variacion_porcentaje") or 0,
-                "venta_unidad":  p.get("venta_unidad", True),
-                "venta_paquete": p.get("venta_paquete", False),
-                "venta_caja":    p.get("venta_caja", False),
-                "venta_millar":  p.get("venta_millar", False),
-                "venta_kg":      p.get("venta_kg", False),
-                "venta_rollo":   p.get("venta_rollo", False),
-                "venta_metro":   p.get("venta_metro", False),
-                "up": p.get("unidades_por_paquete") or 1,
-                "uc": p.get("unidades_por_caja") or 1,
-                "precio_unidad":  money(cu * 1.19 * (mu/100) if mu >= 100 else (cu * 1.19) / (1 - mu/100)) if cu else 0,
-                "precio_paquete": money(cp * 1.19 * (mp/100) if mp >= 100 else (cp * 1.19) / (1 - mp/100)) if cp else 0,
-                "precio_caja":    money(cc * 1.19 * (mc/100) if mc >= 100 else (cc * 1.19) / (1 - mc/100)) if cc else 0,
-                "precio_millar":  money(cu * 1000 * 1.19 * (mMillar/100) if mMillar >= 100 else (cu * 1000 * 1.19) / (1 - mMillar/100)) if cu else 0,
-                "precio_kg":      money(cu * 1.19 * (mKg/100) if mKg >= 100 else (cu * 1.19) / (1 - mKg/100)) if cu else 0,
-                "precio_rollo":   money(cRollo * 1.19 * (mRollo/100) if mRollo >= 100 else (cRollo * 1.19) / (1 - mRollo/100)) if cRollo else 0,
-                "precio_metro":   money(cMetro * 1.19 * (mMetro/100) if mMetro >= 100 else (cMetro * 1.19) / (1 - mMetro/100)) if cMetro else 0,
-                "mu": mu, "mp": mp, "mc": mc,
+                "presentaciones": presentaciones,
             })
 
         def fmt(n): return f"${int(round(n)):,}".replace(",", ".")
@@ -2687,21 +2701,15 @@ async def enviar_reporte_costos(data: dict):
             return {"NUEVO": "NUEVO", "SUBIO": "↑ SUBIÓ", "BAJO": "↓ BAJÓ"}.get(estado, estado)
 
         def render_precios(item):
+            # Una celda por presentacion vendida: etiqueta, costo y precio de venta.
             precios = []
-            if item["venta_unidad"]:
-                precios.append(f'<td style="padding:4px 8px;"><span style="font-size:10px;color:#888;">Unidad</span><br><strong style="font-size:13px;">{fmt(item["precio_unidad"])}</strong></td>')
-            if item["venta_paquete"]:
-                precios.append(f'<td style="padding:4px 8px;"><span style="font-size:10px;color:#888;">Paq x{item["up"]}</span><br><strong style="font-size:13px;">{fmt(item["precio_paquete"])}</strong></td>')
-            if item["venta_caja"]:
-                precios.append(f'<td style="padding:4px 8px;"><span style="font-size:10px;color:#888;">Caja x{item["uc"]}</span><br><strong style="font-size:13px;">{fmt(item["precio_caja"])}</strong></td>')
-            if item["venta_millar"]:
-                precios.append(f'<td style="padding:4px 8px;"><span style="font-size:10px;color:#888;">Millar</span><br><strong style="font-size:13px;">{fmt(item["precio_millar"])}</strong></td>')
-            if item["venta_kg"]:
-                precios.append(f'<td style="padding:4px 8px;"><span style="font-size:10px;color:#888;">Kg</span><br><strong style="font-size:13px;">{fmt(item["precio_kg"])}</strong></td>')
-            if item["venta_rollo"]:
-                precios.append(f'<td style="padding:4px 8px;"><span style="font-size:10px;color:#888;">Rollo</span><br><strong style="font-size:13px;">{fmt(item["precio_rollo"])}</strong></td>')
-            if item["venta_metro"]:
-                precios.append(f'<td style="padding:4px 8px;"><span style="font-size:10px;color:#888;">Metro</span><br><strong style="font-size:13px;">{fmt(item["precio_metro"])}</strong></td>')
+            for pr in item["presentaciones"]:
+                precios.append(
+                    f'<td style="padding:4px 8px;vertical-align:top;">'
+                    f'<span style="font-size:10px;color:#888;">{pr["label"]}</span><br>'
+                    f'<span style="font-size:11px;color:#666;">Costo {fmt(pr["costo"])}</span><br>'
+                    f'<strong style="font-size:13px;color:#111;">Venta {fmt(pr["precio"])}</strong>'
+                    f'</td>')
             return "".join(precios)
 
         # Agrupar por estado
@@ -2739,8 +2747,8 @@ async def enviar_reporte_costos(data: dict):
                   </td>
                   <td style="padding:10px 12px;vertical-align:top;white-space:nowrap;">
                     {costo_ant_html}
-                    <strong style="font-size:13px;color:#111;">{fmt(item["costo_presentacion"])}</strong>
-                    <span style="font-size:11px;color:#888;margin-left:4px;">/ {item["presentacion"]}</span>
+                    <strong style="font-size:13px;color:#111;">{fmt(item["costo_nuevo"])}</strong>
+                    <span style="font-size:11px;color:#888;margin-left:4px;">/ Unidad</span>
                     {variacion_html}
                   </td>
                   <td style="padding:10px 12px;vertical-align:top;">
@@ -2757,8 +2765,8 @@ async def enviar_reporte_costos(data: dict):
                 <thead>
                   <tr style="background:#f9f9f9;border-bottom:1px solid #eee;">
                     <th style="padding:8px 12px;text-align:left;font-size:11px;color:#888;font-weight:600;text-transform:uppercase;">Producto</th>
-                    <th style="padding:8px 12px;text-align:left;font-size:11px;color:#888;font-weight:600;text-transform:uppercase;">Costo</th>
-                    <th style="padding:8px 12px;text-align:left;font-size:11px;color:#888;font-weight:600;text-transform:uppercase;">Precios de venta</th>
+                    <th style="padding:8px 12px;text-align:left;font-size:11px;color:#888;font-weight:600;text-transform:uppercase;">Costo unidad</th>
+                    <th style="padding:8px 12px;text-align:left;font-size:11px;color:#888;font-weight:600;text-transform:uppercase;">Presentaciones (costo y venta)</th>
                   </tr>
                 </thead>
                 <tbody>{filas}</tbody>
