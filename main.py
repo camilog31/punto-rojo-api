@@ -2591,7 +2591,7 @@ async def enviar_reporte_costos(data: dict):
         hasta = f"{fecha}T23:59:59"
         hist_res = sb.table("historial_costos").select(
             "producto_id,estado,costo_unidad_anterior,costo_unidad_nuevo,variacion_porcentaje,factura_id,presentacion_facturada,costo_presentacion_facturada,nota"
-        ).gte("creada_en", desde).lte("creada_en", hasta).in_("estado", ["NUEVO", "SUBIO", "BAJO"]).order("estado").execute()
+        ).gte("creada_en", desde).lte("creada_en", hasta).in_("estado", ["NUEVO", "SUBIO", "BAJO", "SIN_CAMBIO"]).order("estado").execute()
 
         hist = hist_res.data or []
 
@@ -2695,43 +2695,48 @@ async def enviar_reporte_costos(data: dict):
             except: return f
 
         def estado_color(estado):
-            return {"NUEVO": "#C41E2C", "SUBIO": "#ef4444", "BAJO": "#22c55e"}.get(estado, "#888")
+            return {"NUEVO": "#C41E2C", "SUBIO": "#ef4444", "BAJO": "#22c55e", "SIN_CAMBIO": "#6b7280"}.get(estado, "#888")
 
         def estado_label(estado):
-            return {"NUEVO": "NUEVO", "SUBIO": "↑ SUBIÓ", "BAJO": "↓ BAJÓ"}.get(estado, estado)
+            return {"NUEVO": "NUEVO", "SUBIO": "↑ SUBIÓ", "BAJO": "↓ BAJÓ", "SIN_CAMBIO": "= IGUAL"}.get(estado, estado)
 
         def render_precios(item):
-            # Una celda por presentacion vendida: etiqueta, costo y precio de venta.
+            # Una celda por presentacion vendida: etiqueta, costo (con cuanto
+            # subio/bajo ESA presentacion si hubo cambio) y precio de venta.
+            cu_nuevo = item["costo_nuevo"] or 0
+            cu_ant   = item["costo_ant"] or 0
             precios = []
             for pr in item["presentaciones"]:
+                ant_html = ""
+                delta_html = ""
+                if cu_ant > 0 and cu_nuevo > 0 and item["variacion"] != 0:
+                    # costo anterior de ESTA presentacion (mismo factor que el nuevo)
+                    ant_pres = cu_ant * (pr["costo"] / cu_nuevo)
+                    delta = pr["costo"] - ant_pres
+                    if abs(delta) >= 0.5:
+                        arrow = "↑" if delta > 0 else "↓"
+                        col   = "#ef4444" if delta > 0 else "#22c55e"
+                        ant_html = f'<span style="color:#aaa;text-decoration:line-through;margin-right:4px;">{fmt(ant_pres)}</span>'
+                        delta_html = f'<br><span style="font-size:10px;color:{col};font-weight:bold;">{arrow}{fmt(abs(delta))} ({abs(item["variacion"])}%)</span>'
                 precios.append(
                     f'<td style="padding:4px 8px;vertical-align:top;">'
                     f'<span style="font-size:10px;color:#888;">{pr["label"]}</span><br>'
-                    f'<span style="font-size:11px;color:#666;">Costo {fmt(pr["costo"])}</span><br>'
+                    f'<span style="font-size:11px;color:#666;">Costo {ant_html}{fmt(pr["costo"])}</span>'
+                    f'{delta_html}<br>'
                     f'<strong style="font-size:13px;color:#111;">Venta {fmt(pr["precio"])}</strong>'
                     f'</td>')
             return "".join(precios)
 
         # Agrupar por estado
-        nuevos   = [i for i in items if i["estado"] == "NUEVO"]
-        subieron = [i for i in items if i["estado"] == "SUBIO"]
-        bajaron  = [i for i in items if i["estado"] == "BAJO"]
+        nuevos     = [i for i in items if i["estado"] == "NUEVO"]
+        subieron   = [i for i in items if i["estado"] == "SUBIO"]
+        bajaron    = [i for i in items if i["estado"] == "BAJO"]
+        sin_cambio = [i for i in items if i["estado"] == "SIN_CAMBIO"]
 
         def render_grupo(titulo, color, grupo):
             if not grupo: return ""
             filas = ""
             for item in grupo:
-                variacion_html = ""
-                if item["variacion"] != 0 and item["costo_ant"] > 0:
-                    arrow = "↑" if item["variacion"] > 0 else "↓"
-                    col   = "#ef4444" if item["variacion"] > 0 else "#22c55e"
-                    diff_valor = abs(item["costo_nuevo"] - item["costo_ant"])
-                    variacion_html = f'<span style="color:{col};font-weight:bold;margin-left:6px;">{arrow}{fmt(diff_valor)} ({abs(item["variacion"])}%)</span>'
-
-                costo_ant_html = ""
-                if item["costo_ant"] > 0:
-                    costo_ant_html = f'<span style="color:#aaa;font-size:11px;text-decoration:line-through;margin-right:6px;">{fmt(item["costo_ant"])}</span>'
-
                 nota_item_html = ""
                 if item.get("nota"):
                     import html as _html_local
@@ -2744,12 +2749,6 @@ async def enviar_reporte_costos(data: dict):
                     <span style="font-size:11px;color:#888;">{item["categoria"]} · {item["proveedor"]}</span><br>
                     <span style="font-size:10px;color:#bbb;">Factura: {item["factura"]}</span>
                     {nota_item_html}
-                  </td>
-                  <td style="padding:10px 12px;vertical-align:top;white-space:nowrap;">
-                    {costo_ant_html}
-                    <strong style="font-size:13px;color:#111;">{fmt(item["costo_nuevo"])}</strong>
-                    <span style="font-size:11px;color:#888;margin-left:4px;">/ Unidad</span>
-                    {variacion_html}
                   </td>
                   <td style="padding:10px 12px;vertical-align:top;">
                     <table cellpadding="0" cellspacing="0"><tr>{render_precios(item)}</tr></table>
@@ -2765,8 +2764,7 @@ async def enviar_reporte_costos(data: dict):
                 <thead>
                   <tr style="background:#f9f9f9;border-bottom:1px solid #eee;">
                     <th style="padding:8px 12px;text-align:left;font-size:11px;color:#888;font-weight:600;text-transform:uppercase;">Producto</th>
-                    <th style="padding:8px 12px;text-align:left;font-size:11px;color:#888;font-weight:600;text-transform:uppercase;">Costo unidad</th>
-                    <th style="padding:8px 12px;text-align:left;font-size:11px;color:#888;font-weight:600;text-transform:uppercase;">Presentaciones (costo y venta)</th>
+                    <th style="padding:8px 12px;text-align:left;font-size:11px;color:#888;font-weight:600;text-transform:uppercase;">Costo y venta por presentación</th>
                   </tr>
                 </thead>
                 <tbody>{filas}</tbody>
@@ -2776,7 +2774,7 @@ async def enviar_reporte_costos(data: dict):
         resumen_html = f"""
         <div style="display:flex;gap:12px;margin-bottom:24px;flex-wrap:wrap;">
           {"".join(f'<div style="flex:1;min-width:80px;background:white;border-radius:8px;padding:14px;text-align:center;border-top:3px solid {estado_color(e)};"><strong style="font-size:22px;color:{estado_color(e)};">{c}</strong><br><span style="font-size:11px;color:#888;">{l}</span></div>'
-            for e, c, l in [("NUEVO", len(nuevos), "Nuevos"), ("SUBIO", len(subieron), "Subieron"), ("BAJO", len(bajaron), "Bajaron")])}
+            for e, c, l in [("NUEVO", len(nuevos), "Nuevos"), ("SUBIO", len(subieron), "Subieron"), ("BAJO", len(bajaron), "Bajaron"), ("SIN_CAMBIO", len(sin_cambio), "Sin cambio")])}
         </div>"""
 
         # Obtener nota del reporte si existe
@@ -2840,6 +2838,7 @@ async def enviar_reporte_costos(data: dict):
           {render_grupo("🆕 Productos nuevos",   "#C41E2C", nuevos)}
           {render_grupo("📈 Subieron de precio", "#ef4444", subieron)}
           {render_grupo("📉 Bajaron de precio",  "#22c55e", bajaron)}
+          {render_grupo("➖ Sin cambio de precio", "#6b7280", sin_cambio)}
           <p style="text-align:center;color:#aaa;font-size:11px;margin:0;">Generado desde Costos Punto Rojo</p>
         </div>"""
 
