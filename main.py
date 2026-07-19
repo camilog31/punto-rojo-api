@@ -1675,6 +1675,10 @@ async def save_invoice_endpoint(data: dict):
             valor_pagar = max(0.0, subtotal + iva_val - valor_desc - retefuente)
 
             marcar_acuse = bool(data.get("marcar_acuse", False))
+            # "Factura ya pagada" del preview: entra a Contabilidad marcada como
+            # pagada (mismo efecto que el boton Marcar pago de Contabilidad) --
+            # KPIs, deudas por proveedor y export Excel la cuentan solos.
+            factura_pagada = bool(data.get("factura_pagada", False))
 
             sb.table("facturas_contables").insert({
                 "factura_id":        factura_id,
@@ -1694,6 +1698,8 @@ async def save_invoice_endpoint(data: dict):
                 "cufe":              invoice.get("cufe", ""),
                 "acuse":             "SI" if marcar_acuse else "NO",
                 "fecha_acuse":       str(date.today()) if marcar_acuse else None,
+                "pago":              "SI" if factura_pagada else "NO",
+                "fecha_pago":        (invoice.get("fecha") or str(date.today())) if factura_pagada else None,
             }).execute()
 
             if not retefuente_xml:
