@@ -848,9 +848,23 @@ def find_similar_product(supabase: Client, proveedor_nit: str, sku: str, nombre:
     except Exception:
         pass
     # El codigo no emparejo con ningun producto de este proveedor -- puede ser que el
-    # proveedor haya cambiado su esquema de codigos entre facturas (ej. MIO paso de
-    # codigos cortos a codigos de barras y genero duplicados en el catalogo). Avisar si
-    # ya existe un producto activo de este proveedor con el mismo nombre de factura.
+    # proveedor haya empezado a mandar codigos, o los cambiara, entre facturas (ej.
+    # DORA facturaba sus tubulares SIN codigo y ahora manda un codigo; MIO paso de
+    # codigos cortos a codigos de barras). Antes de darlo por Nuevo (y crear un
+    # duplicado), emparejar por nombre normalizado dentro del MISMO proveedor
+    # (ignora prefijo comodin, cantidad final entre parentesis y mayus/minus).
+    objetivo = _nombre_comparable(nombre)
+    if objetivo:
+        try:
+            candidatos = supabase.table("productos").select(SELECT_MATCH_COLS) \
+                .eq("proveedor_id", prov_id).eq("activo", True).execute()
+            for c in (candidatos.data or []):
+                if _nombre_comparable(c.get("nombre_factura", "")) == objetivo:
+                    return {"match": "Exacto", "producto": c, "via": "nombre_normalizado"}
+        except Exception:
+            pass
+    # No hubo match ni por codigo ni por nombre. Avisar (no bloqueante) si existe un
+    # producto activo de este proveedor con el mismo nombre exacto de factura.
     posible_duplicado = None
     try:
         rdup = supabase.table("productos").select(
