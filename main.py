@@ -1327,9 +1327,26 @@ async def save_invoice_endpoint(data: dict):
             cu, cp, cc = calc_costs(costo_final, pres_s, up, pc, precio_es_por_s, upm_s)
 
             if prod_id:
-                old = sb.table("productos").select("costo_unidad_sin_iva").eq("id", prod_id).maybe_single().execute()
+                old = sb.table("productos").select(
+                    "costo_unidad_sin_iva,costo_paquete_sin_iva,costo_caja_sin_iva"
+                ).eq("id", prod_id).maybe_single().execute()
                 costo_ant = float(old.data.get("costo_unidad_sin_iva") or 0) if old.data else 0
+                cp_ant    = float(old.data.get("costo_paquete_sin_iva") or 0) if old.data else 0
+                cc_ant    = float(old.data.get("costo_caja_sin_iva") or 0) if old.data else 0
                 variacion = round(((cu - costo_ant) / costo_ant * 100), 2) if costo_ant > 0 else 0
+
+                # Snapshot de derivados ANTES del UPDATE: el trigger de Supabase los
+                # recalcula al cambiar la materia prima, y para congelar/liberar su
+                # precio necesitamos el costo viejo capturado antes.
+                derivados_snap = []
+                if costo_ant > 0 and round(cu, 2) != round(costo_ant, 2):
+                    try:
+                        rder = sb.table("productos").select(
+                            "id,costo_unidad_sin_iva,costo_paquete_sin_iva,costo_caja_sin_iva"
+                        ).eq("materia_prima_id", prod_id).eq("activo", True).execute()
+                        derivados_snap = rder.data or []
+                    except Exception:
+                        derivados_snap = []
 
                 sb.table("productos").update({
                     "costo_unidad_sin_iva":   cu,
@@ -1377,6 +1394,65 @@ async def save_invoice_endpoint(data: dict):
                 }).eq("id", prod_id).execute()
 
                 estado = "NUEVO" if costo_ant == 0 else ("SUBIO" if cu > costo_ant else "BAJO" if cu < costo_ant else "SIN_CAMBIO")
+
+                # ── Precio congelado (best-effort: NUNCA tumbar el guardado de la
+                # factura). Si el costo BAJA se congela el precio de venta con los
+                # costos viejos (el catalogo/lista siguen mostrando el precio
+                # anterior hasta que se active el nuevo). Si SUBE hasta >= el costo
+                # congelado, el congelado se libera solo. Derivados incluidos.
+                try:
+                    if estado == "BAJO":
+                        filas_cong = [{
+                            "producto_id":     prod_id,
+                            "costo_unidad":    costo_ant,
+                            "costo_paquete":   cp_ant or None,
+                            "costo_caja":      cc_ant or None,
+                            "congelado_desde": invoice.get("fecha"),
+                            "factura_numero":  invoice.get("numero_factura"),
+                        }]
+                        if derivados_snap:
+                            # El trigger ya recalculo los derivados: releer su costo
+                            # actual y congelar SOLO los que de verdad bajaron.
+                            ids_der = [d["id"] for d in derivados_snap]
+                            rnow = sb.table("productos").select("id,costo_unidad_sin_iva").in_("id", ids_der).execute()
+                            now_map = {r["id"]: float(r.get("costo_unidad_sin_iva") or 0) for r in (rnow.data or [])}
+                            for d in derivados_snap:
+                                cu_old_d = float(d.get("costo_unidad_sin_iva") or 0)
+                                if cu_old_d > 0 and round(now_map.get(d["id"], cu_old_d), 2) < round(cu_old_d, 2):
+                                    filas_cong.append({
+                                        "producto_id":     d["id"],
+                                        "costo_unidad":    cu_old_d,
+                                        "costo_paquete":   d.get("costo_paquete_sin_iva"),
+                                        "costo_caja":      d.get("costo_caja_sin_iva"),
+                                        "congelado_desde": invoice.get("fecha"),
+                                        "factura_numero":  invoice.get("numero_factura"),
+                                    })
+                        # Solo insertar los que NO tienen congelado ya: una doble
+                        # bajada conserva el congelado ORIGINAL (no el intermedio).
+                        ids_cong = [f["producto_id"] for f in filas_cong]
+                        rexist = sb.table("precios_congelados").select("producto_id").in_("producto_id", ids_cong).execute()
+                        ya = {r["producto_id"] for r in (rexist.data or [])}
+                        nuevas = [f for f in filas_cong if f["producto_id"] not in ya]
+                        if nuevas:
+                            sb.table("precios_congelados").insert(nuevas).execute()
+
+                    elif estado == "SUBIO":
+                        ids_check = [prod_id] + [d["id"] for d in derivados_snap]
+                        rcong = sb.table("precios_congelados").select("producto_id,costo_unidad").in_("producto_id", ids_check).execute()
+                        cong_map = {c["producto_id"]: float(c.get("costo_unidad") or 0) for c in (rcong.data or [])}
+                        if cong_map:
+                            nuevos_costos = {prod_id: cu}
+                            ids_der2 = [i for i in cong_map if i != prod_id]
+                            if ids_der2:
+                                rnow2 = sb.table("productos").select("id,costo_unidad_sin_iva").in_("id", ids_der2).execute()
+                                for r in (rnow2.data or []):
+                                    nuevos_costos[r["id"]] = float(r.get("costo_unidad_sin_iva") or 0)
+                            liberar = [pid for pid, cong in cong_map.items()
+                                       if round(nuevos_costos.get(pid, 0), 2) >= round(cong, 2)]
+                            if liberar:
+                                sb.table("precios_congelados").delete().in_("producto_id", liberar).execute()
+                except Exception as e_cong:
+                    print(f"precios_congelados best-effort fallo (no bloquea la factura): {e_cong}")
             else:
                 costo_ant = 0
                 variacion = 0
@@ -2621,6 +2697,15 @@ async def enviar_reporte_costos(data: dict):
         prods_map = {p["id"]: p for p in (prods_res.data or [])}
         facts_map = {f["id"]: f for f in (facts_res.data or [])}
 
+        # Precios congelados (pendientes por activar) — best-effort
+        cong_email = {}
+        try:
+            if prod_ids:
+                rcongm = sb.table("precios_congelados").select("producto_id,costo_unidad").in_("producto_id", prod_ids).execute()
+                cong_email = {c["producto_id"]: float(c.get("costo_unidad") or 0) for c in (rcongm.data or [])}
+        except Exception:
+            cong_email = {}
+
         # Combinar datos
         items = []
         for h in hist:
@@ -2681,6 +2766,8 @@ async def enviar_reporte_costos(data: dict):
                 "costo_nuevo": cu,
                 "variacion":   h.get("variacion_porcentaje") or 0,
                 "presentaciones": presentaciones,
+                "congelado_cu": cong_email.get(h["producto_id"]),
+                "mu": mu,
             })
 
         def fmt(n): return f"${int(round(n)):,}".replace(",", ".")
@@ -2742,6 +2829,10 @@ async def enviar_reporte_costos(data: dict):
                     import html as _html_local
                     nota_item_html = f'<p style="font-size:11px;color:#92400e;background:#fffbeb;border-left:3px solid #f59e0b;padding:4px 8px;margin:4px 0 0;border-radius:4px;">⚠️ {_html_local.escape(item["nota"])}</p>'
 
+                congelado_html = ""
+                if item.get("congelado_cu"):
+                    congelado_html = f'<p style="font-size:11px;color:#0369a1;background:#f0f9ff;border-left:3px solid #38bdf8;padding:4px 8px;margin:4px 0 0;border-radius:4px;">🧊 Precio en venta congelado en {fmt(sale_price(item["congelado_cu"], item["mu"]))} /unidad — pendiente por activar</p>'
+
                 filas += f"""
                 <tr style="border-bottom:1px solid #f0f0f0;">
                   <td style="padding:10px 12px;vertical-align:top;">
@@ -2749,6 +2840,7 @@ async def enviar_reporte_costos(data: dict):
                     <span style="font-size:11px;color:#888;">{item["categoria"]} · {item["proveedor"]}</span><br>
                     <span style="font-size:10px;color:#bbb;">Factura: {item["factura"]}</span>
                     {nota_item_html}
+                    {congelado_html}
                   </td>
                   <td style="padding:10px 12px;vertical-align:top;">
                     <table cellpadding="0" cellspacing="0"><tr>{render_precios(item)}</tr></table>
