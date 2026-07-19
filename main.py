@@ -679,6 +679,16 @@ def _es_sku_temporal(sku: str) -> bool:
     no manda un código real. Nunca deben usarse para buscar matches."""
     return bool(re.match(r'^L\d{3}$', (sku or "").strip()))
 
+def _quitar_prefijo_generico(nombre: str) -> str:
+    """Algunos facturadores (ej. Siigo) crean un producto comodin llamado
+    "Producto generico" y ponen el nombre real del producto en el <Note> de la
+    linea. El prefijo no aporta nada y ademas rompe el emparejamiento contra el
+    producto ya guardado (que quedo sin el prefijo). Se quita al inicio, tolerando
+    tilde y mayus/minus. Si el nombre era SOLO el comodin (sin nota), se deja igual."""
+    resto = re.sub(r"^\s*producto\s+gen[eé]rico\b\s*", "", nombre or "", flags=re.IGNORECASE)
+    resto = resto.strip()
+    return resto if resto else (nombre or "").strip()
+
 def _desc_con_nota(line) -> str:
     """Algunos proveedores (ej. Plastiagro/World Office) usan la misma Description
     para variantes con distintas medidas (ancho*calibre*largo) y ponen la medida
@@ -686,12 +696,12 @@ def _desc_con_nota(line) -> str:
     por completo -- eso hacia que dos productos DISTINTOS (ej. mismo reciclado pero
     calibre 6 vs calibre 8) llegaran con el nombre identico y disparen el aviso de
     "codigo repetido en la misma factura" sin forma de distinguirlos. Se agrega la
-    nota al nombre para que cada medida quede como un producto separado."""
+    nota al nombre para que cada medida quede como un producto separado.
+    Ademas se quita el prefijo comodin "Producto generico" (ver _quitar_prefijo_generico)."""
     desc = first_text(line, ["Item", "Description"]) or first_text(line, ["Item", "Name"]) or ""
     nota = (first_text(line, ["Note"]) or "").strip()
-    if nota and nota not in desc:
-        return f"{desc} {nota}".strip()
-    return desc
+    nombre = f"{desc} {nota}".strip() if (nota and nota not in desc) else desc
+    return _quitar_prefijo_generico(nombre)
 
 def _quitar_cantidad_final(nombre: str) -> str:
     """Algunos proveedores de materia prima (ej. rollos) facturan sin código y
@@ -701,6 +711,13 @@ def _quitar_cantidad_final(nombre: str) -> str:
     Se usa solo como comparación de respaldo para emparejar -- el nombre guardado
     en la factura no se toca."""
     return re.sub(r"\(\d+\)\s*$", "", nombre or "").strip()
+
+def _nombre_comparable(nombre: str) -> str:
+    """Nombre normalizado SOLO para comparar al emparejar (no se guarda): sin el
+    prefijo comodin "Producto generico", sin la cantidad final entre parentesis y
+    en mayusculas. Asi un producto guardado como "31x47 NEGRO CAL 2.3(300)" empareja
+    con uno que llega como "Producto generico 31X47 NEGRO CAL 2.3(813)"."""
+    return _quitar_cantidad_final(_quitar_prefijo_generico(nombre or "")).strip().upper()
 
 def nombres_muy_distintos(nombre_nuevo: str, nombre_guardado: str) -> bool:
     """Compara la descripcion de la linea nueva contra la del producto ya guardado
@@ -788,12 +805,14 @@ def find_similar_product(supabase: Client, proveedor_nit: str, sku: str, nombre:
         # una cantidad final distinta (ver _quitar_cantidad_final) -- comparar
         # ignorando esa cantidad antes de dar por hecho que es un producto nuevo.
         nombre_norm = _quitar_cantidad_final(nombre)
+        objetivo = _nombre_comparable(nombre)
         if nombre_norm and nombre_norm != nombre:
             try:
                 candidatos = supabase.table("productos").select(SELECT_MATCH_COLS) \
                     .eq("proveedor_id", prov_id).eq("activo", True).execute()
                 for c in (candidatos.data or []):
-                    if _quitar_cantidad_final(c.get("nombre_factura", "")) == nombre_norm:
+                    # Compara ignorando prefijo comodin, cantidad final y mayus/minus
+                    if _nombre_comparable(c.get("nombre_factura", "")) == objetivo:
                         return {"match": "Exacto", "producto": c, "via": "nombre_normalizado"}
             except Exception:
                 pass
