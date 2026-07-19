@@ -746,7 +746,7 @@ def find_similar_product(supabase: Client, proveedor_nit: str, sku: str, nombre:
         "markup_millar_pct,markup_kg_pct,markup_rollo_pct,markup_metro_pct,"
         "multiplicador_rollo,multiplicador_metro,"
         "venta_unidad,venta_paquete,venta_caja,venta_millar,venta_kg,venta_rollo,venta_metro,costo_transporte,es_materia_prima,es_insumo,"
-        "presentaciones_extra"
+        "presentaciones_extra,descuento_pct_factura,descuento_aplicado"
     )
     # Resolver el proveedor_id una sola vez -- se necesita en ambos caminos de abajo
     # para no emparejar nunca productos de un proveedor con el codigo de otro.
@@ -1125,6 +1125,11 @@ async def parse_invoice_endpoint(
                 line["es_insumo"]               = bool(p.get("es_insumo"))
                 line["presentaciones_extra"]   = p.get("presentaciones_extra") or []
                 line["costo_anterior"]         = float(p.get("costo_unidad_sin_iva") or 0)
+                # Ultimo descuento POR PRODUCTO registrado (de la ultima factura que
+                # llego con descuento para este producto) -- para comparar en el preview
+                # contra el descuento que trae la factura actual.
+                line["descuento_pct_anterior"]      = float(p.get("descuento_pct_factura") or 0)
+                line["descuento_aplicado_anterior"] = bool(p.get("descuento_aplicado"))
 
                 # Aviso no bloqueante: si el emparejamiento fue por codigo de proveedor
                 # (no por nombre) y la descripcion de esta linea es muy distinta a la ya
